@@ -132,6 +132,9 @@
   // Reads a file from the Portal data folder. SharePoint doesn't always include the
   // temporary download link, so ask for the full item, then fall back to downloading
   // through Microsoft Graph directly. Never fetch a missing link.
+    // Reads a file from the Portal data folder. SharePoint doesn't always include the
+  // temporary download link, so ask for the full item, then fall back to downloading
+  // through Microsoft Graph directly. Never fetch a missing link.
   async function readFile(name) {
     const { driveId } = await resolve();
     let meta;
@@ -147,6 +150,8 @@
     }
     if (!res.ok) throw new Error(`Could not download ${name} from SharePoint (HTTP ${res.status}). Try Reload; if it persists, check you can open the "${C.folder}" folder in SharePoint.`);
     try { return await res.json(); }
+    catch (e) { throw new Error(`${name} in SharePoint is not readable data. Run the export again, or import the downloaded file.`); }
+  }
     catch (e) { throw new Error(`${name} in SharePoint is not readable data. Run the export again, or import the downloaded file.`); }
   }
 
