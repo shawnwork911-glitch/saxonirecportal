@@ -244,9 +244,20 @@
     const ageDays = d.syncedAt ? Math.floor((Date.now() - new Date(d.syncedAt)) / 86400000) : null;
     return `<div class="syncbox"><div class="t">Registry data</div>
       <div class="v">${d.syncedAt ? 'As of ' + esc(dTime(d.syncedAt)) : 'Not imported yet'}</div>
-      ${info ? `<div class="t">Imported by ${esc(info.importedBy)}, ${esc(dTime(info.importedAt))}</div>` : ''}
+      ${info ? `<div class="t">${info.automatic ? 'Uploaded automatically' : `Imported by ${esc(info.importedBy)}`}, ${esc(dTime(info.importedAt))}</div>` : ''}
+      ${info && info.automatic ? renewNotice(info.signInRenewBy) : ''}
       ${d.environment === 'sandbox' ? '<div class="warn">This is SANDBOX data, not production.</div>' : ''}
       ${ageDays !== null && ageDays >= 7 ? `<div class="warn">This data is ${ageDays} days old.</div>` : ''}</div>`;
+  }
+
+  // The exporter's SharePoint sign-in lasts 90 days unless it renews itself.
+  function renewNotice(by) {
+    if (!by) return '';
+    const days = Math.ceil((new Date(`${by}T00:00:00Z`) - Date.now()) / 86400000);
+    if (days > 14) return '';
+    return days < 0
+      ? `<div class="warn">Automatic upload stopped: its SharePoint sign-in expired on ${esc(dDate(by))}. Renew it with sign-in-worker.ps1, or import by hand.</div>`
+      : `<div class="warn">Automatic upload's SharePoint sign-in must be renewed by ${esc(dDate(by))} (${days} day${days === 1 ? '' : 's'}).</div>`;
   }
 
   function viewDashboard(D) {
@@ -266,7 +277,7 @@
     const devs = Object.entries(byDev).sort((a, b) => b[1] - a[1]);
     const max = Math.max(1, ...devs.map(x => x[1]));
     const empty = !S.data.syncedAt;
-    return `${empty ? `<div class="card card-b"><h2 class="h2">No registry data yet</h2><p class="muted mt4">${D.canEdit ? 'Run the export on GitHub, then use <b>Import registry data</b>.' : 'Ask an operator to import the registry data.'}</p></div>` : ''}
+    return `${empty ? `<div class="card card-b"><h2 class="h2">No registry data yet</h2><p class="muted mt4">${D.canEdit ? 'Run the export on GitHub. With automatic upload it appears here by itself; otherwise use <b>Import registry data</b>.' : 'Ask an operator to run the registry export.'}</p></div>` : ''}
     <div class="kpis">${kpis.map(k => `<div class="card kpi"><span class="muted small">${k[0]}</span><span class="v">${k[1]}</span><span class="muted small">${k[2]}</span></div>`).join('')}</div>
     <div class="row">
       <section class="card col-main"><div class="card-h"><h2>Waiting in the registry</h2><span class="muted small">${D.pendingRes.length}</span></div>
@@ -384,8 +395,9 @@
     const p = S.pending, cur = S.data;
     return `<section class="card card-b form">
       <h2>Import registry data</h2>
+      <p class="note">When automatic upload is set up, running the export on GitHub updates the portal by itself, so this page is only a fallback. Click <b>Reload</b> to see the newest data.</p>
       <ol class="steps">
-        <li>On GitHub, open the private <b>saxon-irec-worker</b> repository → <b>Actions</b> → <b>Export I-REC registry data</b> → <b>Run workflow</b>.</li>
+        <li>On GitHub, open the private <b>saxonirecworker</b> repository → <b>Actions</b> → <b>Export I-REC registry data</b> → <b>Run workflow</b>.</li>
         <li>When it finishes (about a minute), open the run and download <b>irec-registry-data</b> under Artifacts.</li>
         <li>Choose that file below. There is no need to unzip it.</li>
       </ol>
