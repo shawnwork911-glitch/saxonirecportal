@@ -102,3 +102,5 @@ tr.current td{background:#EEF6F4}tr.sel td{background:#F5FAF8}
 .p-requested,.p-processing,.p-delete-requested{background:#E2ECF8;color:#1A4F8A}.p-failed{background:#F8E0DC;color:#7C2417}
 .note.err{background:#F8E0DC;color:#7C2417}
 .steps{margin:0;padding-left:1.3em;display:grid;gap:6px}
+.p-queued{background:#E2ECF8;color:#1A4F8A}
+.note.pad{margin:12px 18px 0}

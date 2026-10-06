@@ -14,9 +14,14 @@
   const ORDER = { viewer: 1, operator: 2, approver: 2 };
   const ROLE_LABEL = { viewer: 'Viewer', operator: 'Operator', approver: 'Operator' };
   const LIST_NAMES = { earmarks: 'IREC Earmarks', remarks: 'IREC Remarks', activity: 'IREC Activity' };
+  const OPTIONAL_LISTS = { requests: 'IREC Requests' }; // draft requests work once this list exists
   const FORMAT = 'saxon-irec-snapshot';
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const LABEL = { available: 'Available', earmarked: 'Earmarked', held: 'In a registry draft', redeemed: 'Redeemed' };
+  const LABEL = { available: 'Available', earmarked: 'Earmarked', queued: 'Request queued', held: 'In a registry draft', redeemed: 'Redeemed' };
+  const REQ_LABEL = { requested: 'Queued for the registry', processing: 'Being created', draft: 'Draft in the registry', submitted: 'Submitted in the registry', completed: 'Completed',
+    failed: 'Failed', 'delete-requested': 'Deletion queued', deleted: 'Deleted', withdrawn: 'Withdrawn', issued: 'Issued', rejected: 'Rejected' };
+  const OPEN_REQ = ['requested', 'processing', 'draft', 'submitted', 'delete-requested'];
+  const refOf = (kind, id) => `${kind === 'issue' ? 'IR' : 'RSV'}-${1000 + Number(id)}`;
   const TITLES = { dashboard: 'Overview', inventory: 'Inventory', reservations: 'Redemptions and transfers', issuance: 'Issuance', audit: 'Activity log', import: 'Import registry data' };
   const HOME = location.origin + location.pathname.replace(/index\.html$/, '');
 
@@ -35,6 +40,7 @@
   const short = uid => (uid && uid.length > 12 ? `${uid.slice(0, 6)}…${uid.slice(-4)}` : uid || '–');
   const initials = name => String(name).split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase();
   const pill = k => `<span class="pill p-${LABEL[k] ? esc(k) : 'other'}">${esc(LABEL[k] || k)}</span>`;
+  const reqPill = r => `<span class="pill p-${REQ_LABEL[r.status] ? esc(r.status) : 'other'}">${esc(r.kind === 'issue' && r.status === 'submitted' ? 'With the Issuer' : REQ_LABEL[r.status] || r.status || 'Unknown')}</span>`;
   const regPill = s => { const k = String(s || '').toLowerCase(); const cls = k === 'draft' ? 'draft' : k === 'submitted' ? 'submitted' : k === 'approved' ? 'completed' : k === 'rejected' ? 'rejected' : 'other'; return `<span class="pill p-${cls}">${esc(s || 'Unknown')}</span>`; };
   const sum = (arr, f) => arr.reduce((t, x) => t + f(x), 0);
   const isTrade = t => /trade/i.test(t || '');
@@ -85,6 +91,10 @@
       const l = (lists.value || []).find(x => x.displayName === n);
       if (!l) throw new Error(`The SharePoint list "${n}" was not found, or you don't have access to it.`);
       listIds[k] = l.id;
+    }
+    for (const [k, n] of Object.entries(OPTIONAL_LISTS)) {
+      const l = (lists.value || []).find(x => x.displayName === n);
+      if (l) listIds[k] = l.id;
     }
     ids = { siteId: site.id, driveId: drive.id, lists: listIds };
     return ids;
@@ -215,14 +225,33 @@
   const EMPTY = { syncedAt: null, accounts: [], devices: [], issues: [], items: [], transactions: [], beneficiaries: [], reservations: [] };
 
   async function load() {
-    const [snap, info, ems, acts] = await Promise.all([
+    const hasRequests = !!(await resolve()).lists.requests;
+    const [snap, info, ems, acts, reqs] = await Promise.all([
       readFile('registry-snapshot.json'), readFile('import-status.json'),
-      items('earmarks'), items('activity', { orderby: 'fields/Created desc', top: 300 })
+      items('earmarks'), items('activity', { orderby: 'fields/Created desc', top: 300 }),
+      hasRequests ? items('requests') : Promise.resolve([])
     ]);
     const earmarks = {};
     ems.forEach(e => { (earmarks[e.f.Title] = earmarks[e.f.Title] || []).push({ id: e.id, client: e.f.Client, byName: e.createdBy.name }); });
-    S.data = Object.assign({}, EMPTY, snap || {}, { info: info || null, earmarks });
+    const base = Object.assign({}, EMPTY, snap || {});
+    S.data = Object.assign(base, { info: info || null, earmarks, hasRequests, requests: shapeRequests(reqs, base) });
     S.audit = acts.map(a => ({ at: a.createdAt, name: a.createdBy.name !== 'Unknown' ? a.createdBy.name : a.f.PersonName, action: a.f.Title, ref: a.f.Ref, ok: a.f.Ok !== false }));
+  }
+
+  // Requests made in the portal (the IREC Requests list). The worker on GitHub turns them into drafts.
+  function shapeRequests(rows, snap) {
+    const bens = Object.fromEntries((snap.beneficiaries || []).map(b => [b.uid, b]));
+    const devs = Object.fromEntries((snap.devices || []).map(d => [d.code, d]));
+    return rows.map(r => {
+      const raw = String(r.f.Kind || '').toLowerCase(), kind = raw === 'issue' ? 'issue' : 'reservation';
+      let p = {}, res = {};
+      try { p = JSON.parse(r.f.Payload || '{}'); } catch (e) { p = {}; }
+      try { res = JSON.parse(r.f.Result || '{}'); } catch (e) { res = {}; }
+      const summary = kind === 'issue'
+        ? { deviceName: res.deviceName || (devs[p.deviceCode] || {}).name || p.deviceCode, startDate: p.startDate, endDate: p.endDate, volume: Number(p.volume), recipientAccount: p.recipientAccount }
+        : { type: raw === 'transfer' ? 'Transfer' : 'Redemption', party: res.beneficiaryName || (bens[p.beneficiaryUid] || {}).name || res.destinationAccount || p.destinationAccount || '', volume: Number(p.volume), itemUids: p.itemUids || [] };
+      return { id: r.id, kind, ref: refOf(kind, r.id), status: r.f.RequestStatus || 'requested', summary, error: r.f.ErrorMessage || '', registryUid: r.f.RegistryUid || null, createdBy: r.createdBy, createdAt: r.createdAt };
+    }).filter(r => r.status !== 'deleted' && r.status !== 'done').sort((a, b) => b.id - a.id);
   }
 
   function say(msg, isErr) {
@@ -242,16 +271,19 @@
   // ---------- derived data ----------
   function derive() {
     const d = S.data;
+    const queued = {};
+    d.requests.filter(r => r.kind === 'reservation' && ['requested', 'processing'].includes(r.status)).forEach(r => (r.summary.itemUids || []).forEach(u => { queued[u] = r; }));
     const items = d.items.map(it => {
       const held = Math.max(0, it.volume - it.available), trade = isTrade(it.accountType), e = (d.earmarks[it.uid] || [])[0];
-      const status = !trade ? 'redeemed' : (it.available <= 0 && held > 0 ? 'held' : e ? 'earmarked' : held > 0 ? 'held' : 'available');
-      return Object.assign({}, it, { held, trade, earmark: e, status });
+      const status = !trade ? 'redeemed' : (queued[it.uid] ? 'queued' : it.available <= 0 && held > 0 ? 'held' : e ? 'earmarked' : held > 0 ? 'held' : 'available');
+      return Object.assign({}, it, { held, trade, earmark: e, status, queuedIn: queued[it.uid] || null });
     });
     return {
       me: S.me, canEdit: ORDER[S.me.role] >= 2,
       items, byUid: Object.fromEntries(items.map(i => [i.uid, i])),
       beneficiaries: d.beneficiaries.filter(b => b.active).sort((a, b) => a.name.localeCompare(b.name)),
-      pendingRes: d.reservations.filter(r => /draft|submitted/i.test(r.status))
+      pendingRes: d.reservations.filter(r => /draft|submitted/i.test(r.status)),
+      myRequests: d.requests.filter(r => (OPEN_REQ.includes(r.status) || r.status === 'failed') && r.createdBy && r.createdBy.id === S.me.id)
     };
   }
 
@@ -310,6 +342,8 @@
         ${devs.length ? devs.map(([n, v]) => `<div><div class="kv"><span class="kv-strong">${esc(n)}</span><span>${fmt(v)} MWh</span></div><div class="bar"><span data-pct="${Math.round(v / max * 100)}"></span></div></div>`).join('') : '<p class="muted mt0">No certificates in the imported data.</p>'}
       </section>
     </div>
+    ${D.myRequests.length ? `<section class="card"><div class="card-h"><h2>Your requests</h2><span class="muted small">${D.myRequests.length}</span></div>
+      ${D.myRequests.slice(0, 6).map(r => `<div class="listrow"><div><b>${esc(r.ref)}</b><span class="muted">, ${r.kind === 'issue' ? 'issue request' : esc(String(r.summary.type).toLowerCase())}, ${fmt(r.summary.volume)} MWh</span>${r.error ? `<div class="small error">${esc(r.error)}</div>` : ''}</div><div class="actions">${reqPill(r)}</div></div>`).join('')}</section>` : ''}
     <section class="card"><div class="card-h"><h2>Recent activity</h2><button class="linkbtn" ${attr({ a: 'go', s: 'audit' })}>See all activity</button></div>
       ${S.audit.slice(0, 6).map(e => `<div class="listrow"><span class="muted when">${esc(dTime(e.at))}</span><b class="whom">${esc(e.name)}</b><span class="what">${esc(e.action)}${e.ref ? ` <span class="muted">(${esc(e.ref)})</span>` : ''}</span></div>`).join('') || '<p class="empty">No activity yet.</p>'}
     </section>`;
@@ -332,8 +366,10 @@
       </div>
       ${D.canEdit && selected.length && !S.form ? `<div class="selbar"><b>${selected.length} selected, ${fmt(selAvail)} MWh available</b><div class="actions">
         <button class="btn primary" ${attr({ a: 'form', f: 'earmark' })}>Earmark for a client</button>
+        ${S.data.hasRequests ? `<button class="btn primary" ${attr({ a: 'form', f: 'res' })}>Request a redemption or transfer</button>` : ''}
         <button class="btn" data-a="clearsel">Clear selection</button></div></div>` : ''}
       ${S.form === 'earmark' ? viewEarmarkForm(D, selAvail) : ''}
+      ${S.form === 'res' ? viewResForm(D, selected, selAvail) : ''}
       <div class="row">
         <section class="card grow"><div class="card-h"><h2>Certificate blocks</h2><span class="muted small">${rows.length} shown, ${fmt(sum(rows, i => i.volume))} MWh</span></div>
           <div class="tablewrap"><table><thead><tr><th><span class="sr">Select</span></th><th>Certificate</th><th>Device</th><th>Period</th><th>Account</th><th class="num">Volume</th><th class="num">Available</th><th>Status</th><th>Earmarked for</th></tr></thead><tbody>
@@ -346,6 +382,24 @@
         </section>
         ${det ? viewItemDetail(D, det) : ''}
       </div>`;
+  }
+
+  function viewResForm(D, selected, selAvail) {
+    const fv = S.fv, red = fv.type !== 'Transfer';
+    return `<section class="card accent form"><div><h2>Request a draft from ${selected.length} certificate block${selected.length === 1 ? '' : 's'}</h2>
+      <p class="muted small mt4">Your request is queued. The next time the export runs on GitHub, it checks the request and creates a <b>Draft</b> in the registry. Nothing moves or is redeemed until your approver submits and approves it in the registry.</p></div>
+      <div class="fields">
+        <div><label class="lbl" for="rs-type">Type</label><select id="rs-type" class="fld" data-f="type" data-rerender="1">${opt('Redemption', 'Redemption', fv.type)}${opt('Transfer', 'Transfer', fv.type)}</select></div>
+        <div><label class="lbl" for="rs-vol">Volume (MWh)</label><input id="rs-vol" class="fld" inputmode="decimal" data-f="volume" value="${esc(fv.volume)}"><span class="muted small">Up to ${fmt(selAvail)} MWh</span></div>
+        ${red ? '' : `<div class="wide"><label class="lbl" for="rs-dest">Receiving account code</label><input id="rs-dest" class="fld mono" data-f="destinationAccount" value="${esc(fv.destinationAccount)}" placeholder="Account code from the buyer"></div>`}
+      </div>
+      ${red ? `<div class="fields">
+        <div class="wide"><label class="lbl" for="rs-ben">Beneficiary</label><select id="rs-ben" class="fld" data-f="beneficiaryUid">${opt('', 'Choose a beneficiary', fv.beneficiaryUid)}${D.beneficiaries.map(b => opt(b.uid, b.location ? `${b.name} (${b.location.slice(0, 40)})` : b.name, fv.beneficiaryUid)).join('')}</select></div>
+        <div class="wide"><label class="lbl" for="rs-pur">Reporting purpose</label><input id="rs-pur" class="fld" data-f="purpose" value="${esc(fv.purpose)}"></div>
+        <div><label class="lbl" for="rs-start">Consumption from</label><input id="rs-start" class="fld" type="date" data-f="periodStart" value="${esc(fv.periodStart)}"></div>
+        <div><label class="lbl" for="rs-end">Consumption to</label><input id="rs-end" class="fld" type="date" data-f="periodEnd" value="${esc(fv.periodEnd)}"></div></div>` : ''}
+      ${S.err ? `<p class="error" role="alert">${esc(S.err)}</p>` : ''}
+      <div class="actions"><button class="btn primary" data-a="createres">Queue the request</button><button class="btn" data-a="cancel">Cancel</button></div></section>`;
   }
 
   function viewEarmarkForm(D, selAvail) {
@@ -378,10 +432,34 @@
         <div><button class="btn primary sm" ${attr({ a: 'remark', id: i.uid })}>Add remark</button></div>` : ''}</div></aside>`;
   }
 
+  function requestActions(D, r) {
+    if (!D.canEdit) return '';
+    const b = (act, text, cls) => `<button class="btn sm ${cls || ''}" ${attr({ a: 'reqact', act, id: r.id })}>${text}</button>`;
+    if (r.status === 'requested') return b('cancel', 'Cancel', 'danger');
+    if (r.status === 'failed') return b('cancel', 'Remove');
+    if (r.status === 'draft') return r.kind === 'issue' ? b('withdraw', 'Mark as withdrawn', 'danger') : b('delete', 'Delete draft', 'danger');
+    return '';
+  }
+
+  function viewRequestsTable(D, list, title) {
+    if (!S.data.hasRequests) return `<p class="note">Drafts can't be requested here yet: the SharePoint list <b>IREC Requests</b> hasn't been created. See the setup guide.</p>`;
+    return `<section class="card"><div class="card-h"><h2>${title}</h2><span class="muted small">${list.length}</span></div>
+      <p class="note pad">Requests become Drafts in the registry when the export next runs on GitHub. Approval stays in the registry.</p>
+      <div class="tablewrap"><table><thead><tr><th>Reference</th><th>${list[0] && list[0].kind === 'issue' ? 'Device' : 'Type'}</th><th>${list[0] && list[0].kind === 'issue' ? 'Period' : 'Beneficiary or receiving account'}</th><th class="num">Volume</th><th>Status</th><th>Requested by</th><th>Requested</th><th></th></tr></thead><tbody>
+      ${list.map(r => `<tr><td class="mono">${esc(r.ref)}</td>
+        <td>${r.kind === 'issue' ? esc(r.summary.deviceName) : esc(r.summary.type)}</td>
+        <td class="wrap">${r.kind === 'issue' ? period(r.summary.startDate, r.summary.endDate) : esc(r.summary.party || '–')}</td>
+        <td class="num">${fmt(r.summary.volume)}</td>
+        <td class="wrap">${reqPill(r)}${r.error ? `<div class="small ${r.status === 'failed' ? 'error' : 'muted'}">${esc(r.error)}</div>` : ''}</td>
+        <td>${esc(r.createdBy.name)}</td><td>${dDate(r.createdAt)}</td><td>${requestActions(D, r)}</td></tr>`).join('')}
+      </tbody></table>${list.length ? '' : '<p class="empty">No requests yet.</p>'}</div></section>`;
+  }
+
   function viewReservations(D) {
     const res = S.data.reservations.slice().sort((a, b) => String(a.status).localeCompare(String(b.status)));
     const tx = S.data.transactions.slice().sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))).slice(0, 100);
-    return `<p class="note">Drafts are created, submitted and approved in the registry. This page shows them as of the last import.</p>
+    return `${viewRequestsTable(D, S.data.requests.filter(r => r.kind === 'reservation'), 'Requests from the portal')}
+      <p class="note">Drafts are submitted and approved in the registry. The tables below show the registry as of the last refresh.</p>
       <section class="card"><div class="card-h"><h2>Drafts and submissions in the registry</h2><span class="muted small">${res.length}</span></div><div class="tablewrap"><table>
         <thead><tr><th>Registry ID</th><th>Type</th><th>Beneficiary or receiving account</th><th>From</th><th class="num">Volume</th><th>Status</th></tr></thead><tbody>
         ${res.map(r => `<tr><td class="mono">${esc(short(r.uid))}</td><td>${esc(r.type || '–')}</td><td class="wrap">${esc(r.beneficiary || r.destination || '–')}</td><td class="mono">${esc(r.source || '–')}</td><td class="num">${fmt(r.volume)}</td><td>${regPill(r.status)}</td></tr>`).join('')}
@@ -392,18 +470,35 @@
         </tbody></table>${tx.length ? '' : '<p class="empty">No transactions in the imported data.</p>'}</div></section>`;
   }
 
-  function viewIssuance() {
+  function viewIssueForm(D) {
+    const dev = S.data.devices.find(d => d.code === S.fv.deviceCode);
+    const trade = S.data.accounts.filter(a => isTrade(a.type) && a.active);
+    return `<section class="card accent form"><div><h2>Request an issue for ${esc(dev ? dev.name : '')}</h2>
+      <p class="muted small mt4">Queued for the next export on GitHub, which creates a <b>Draft</b> issue request in the registry. The Issuer only sees it once it is submitted there.</p></div>
+      <div class="fields">
+        <div><label class="lbl" for="is-start">Production from</label><input id="is-start" class="fld" type="date" data-f="startDate" value="${esc(S.fv.startDate)}"></div>
+        <div><label class="lbl" for="is-end">Production to</label><input id="is-end" class="fld" type="date" data-f="endDate" value="${esc(S.fv.endDate)}"></div>
+        <div><label class="lbl" for="is-vol">Production (MWh)</label><input id="is-vol" class="fld" inputmode="decimal" data-f="volume" value="${esc(S.fv.volume)}"></div>
+        <div class="wide"><label class="lbl" for="is-acc">Deposit into</label><select id="is-acc" class="fld" data-f="recipientAccount">${trade.map(a => opt(a.code, `${a.name} (${a.code})`, S.fv.recipientAccount)).join('')}</select></div></div>
+      <p class="muted small mt0">Attach meter readings and invoices to the request in the registry. The Issuer requires them.</p>
+      ${S.err ? `<p class="error" role="alert">${esc(S.err)}</p>` : ''}
+      <div class="actions"><button class="btn primary" data-a="createissue">Queue the request</button><button class="btn" data-a="cancel">Cancel</button></div></section>`;
+  }
+
+  function viewIssuance(D) {
     const devices = S.data.devices.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
     const reg = S.data.issues.slice().sort((a, b) => String(b.periodEnd).localeCompare(String(a.periodEnd)));
     const lastIssued = {};
     reg.forEach(i => { if (/approved|issued/i.test(i.status) && !lastIssued[i.deviceCode]) lastIssued[i.deviceCode] = period(i.periodStart, i.periodEnd); });
-    return `<div class="devices">${devices.map(d => `<div class="card card-b device">
+    return `${S.form === 'issue' ? viewIssueForm(D) : ''}<div class="devices">${devices.map(d => `<div class="card card-b device">
         <div class="kv"><span class="device-name"><b>${esc(d.name)}</b><span class="muted small">${esc(d.fuel)}${d.capacity ? ', ' + fmt(d.capacity) + ' MW' : ''}, <span class="mono">${esc(d.code)}</span></span></span><span>${regPill(d.status)}</span></div>
-        <span class="small">Last issued: ${lastIssued[d.code] || 'None yet'}</span></div>`).join('') || '<p class="muted">No devices in the imported data.</p>'}</div>
+        <span class="small">Last issued: ${lastIssued[d.code] || 'None yet'}</span>
+        ${D.canEdit && S.data.hasRequests && /approved/i.test(d.status) ? `<div><button class="btn sm" ${attr({ a: 'issueform', code: d.code })}>Request an issue</button></div>` : ''}</div>`).join('') || '<p class="muted">No devices in the imported data.</p>'}</div>
       <section class="card"><div class="card-h"><h2>Issue requests in the registry</h2></div><div class="tablewrap"><table>
         <thead><tr><th>Device</th><th>Period</th><th class="num">Production</th><th class="num">Issued</th><th>Status</th></tr></thead><tbody>
         ${reg.slice(0, 200).map(i => `<tr><td>${esc(i.deviceName)}</td><td>${period(i.periodStart, i.periodEnd)}</td><td class="num">${fmt(i.productionVolume)}</td><td class="num">${fmt(i.issuedVolume)}</td><td>${regPill(i.status)}</td></tr>`).join('')}
-        </tbody></table>${reg.length ? '' : '<p class="empty">No issue requests in the imported data.</p>'}</div></section>`;
+        </tbody></table>${reg.length ? '' : '<p class="empty">No issue requests in the imported data.</p>'}</div></section>
+      ${viewRequestsTable(D, S.data.requests.filter(r => r.kind === 'issue'), 'Issue requests from the portal')}`;
   }
 
   function viewAudit() {
@@ -492,7 +587,61 @@
     if (a === 'toast') { S.toast = null; render(); return; }
     if (a === 'clearsel') { S.sel.clear(); render(); return; }
     if (a === 'cancel') { S.form = null; S.err = ''; render(); return; }
-    if (a === 'form') { S.form = 'earmark'; S.err = ''; S.detail = null; S.fv = { client: '', note: '' }; render(); return; }
+    if (a === 'form') {
+      S.form = el.dataset.f; S.err = ''; S.detail = null;
+      const y = new Date().getFullYear(), avail = sum([...S.sel].map(u => derive().byUid[u]).filter(Boolean), i => i.available);
+      S.fv = el.dataset.f === 'res' ? { type: 'Redemption', volume: String(avail), beneficiaryUid: '', purpose: `Scope 2 reporting ${y}`, periodStart: `${y}-01-01`, periodEnd: '', destinationAccount: '' } : { client: '', note: '' };
+      render(); return;
+    }
+    if (a === 'issueform') {
+      const trade = S.data.accounts.filter(x => isTrade(x.type) && x.active);
+      S.form = 'issue'; S.err = ''; S.detail = null;
+      S.fv = { deviceCode: el.dataset.code, startDate: '', endDate: '', volume: '', recipientAccount: (trade[0] || {}).code || '' };
+      render(); return;
+    }
+    if (a === 'createres') run(async () => {
+      const fv = S.fv, D = derive(), vol = Number(String(fv.volume).replace(/,/g, ''));
+      const picked = [...S.sel].map(u => D.byUid[u]).filter(Boolean), avail = sum(picked, i => i.available);
+      const busy = picked.find(i => i.queuedIn);
+      if (!picked.length) { S.err = 'Select at least one certificate block first.'; render(); return; }
+      if (busy) { S.err = `${short(busy.uid)} is already in the queued request ${busy.queuedIn.ref}. Wait for it, or cancel it first.`; render(); return; }
+      if (!(vol > 0)) { S.err = 'Enter a volume above zero.'; render(); return; }
+      if (vol > avail) { S.err = `Only ${fmt(avail)} MWh is available in the selected blocks.`; render(); return; }
+      if (new Set(picked.map(i => i.accountCode)).size > 1) { S.err = 'All selected certificates must be in the same account.'; render(); return; }
+      if (fv.type === 'Redemption' && !fv.beneficiaryUid) { S.err = 'Choose a beneficiary.'; render(); return; }
+      if (fv.type === 'Redemption' && (!fv.periodStart || !fv.periodEnd || fv.periodEnd < fv.periodStart)) { S.err = 'Enter a consumption period that ends after it starts.'; render(); return; }
+      if (fv.type === 'Redemption' && !String(fv.purpose || '').trim()) { S.err = 'Enter the reporting purpose.'; render(); return; }
+      if (fv.type === 'Transfer' && !String(fv.destinationAccount).trim()) { S.err = 'Enter the receiving account code.'; render(); return; }
+      const payload = fv.type === 'Transfer' ? { itemUids: [...S.sel], volume: vol, destinationAccount: String(fv.destinationAccount).trim() }
+        : { itemUids: [...S.sel], volume: vol, beneficiaryUid: fv.beneficiaryUid, purpose: fv.purpose, periodStart: fv.periodStart, periodEnd: fv.periodEnd };
+      const created = await addItem('requests', { Title: 'New request', Kind: fv.type.toLowerCase(), RequestStatus: 'requested', Payload: JSON.stringify(payload) });
+      const ref = refOf('reservation', created.id);
+      await log(`Requested a ${fv.type.toLowerCase()} draft, ${fmt(vol)} MWh`, ref, { itemUids: [...S.sel] });
+      S.sel.clear(); S.form = null; S.screen = 'reservations';
+      await refreshAll(`${ref} queued. The Draft is created in the registry the next time the export runs on GitHub.`);
+    });
+    if (a === 'createissue') run(async () => {
+      const fv = S.fv, vol = Number(String(fv.volume).replace(/,/g, ''));
+      if (!fv.startDate || !fv.endDate || fv.endDate < fv.startDate) { S.err = 'Enter a production period that ends after it starts.'; render(); return; }
+      if (!(vol > 0)) { S.err = 'Enter the production volume in MWh.'; render(); return; }
+      if (!fv.recipientAccount) { S.err = 'Choose the account to deposit into.'; render(); return; }
+      const created = await addItem('requests', { Title: 'New request', Kind: 'issue', RequestStatus: 'requested', Payload: JSON.stringify({ deviceCode: fv.deviceCode, startDate: fv.startDate, endDate: fv.endDate, volume: vol, recipientAccount: fv.recipientAccount }) });
+      const ref = refOf('issue', created.id);
+      await log('Requested an issue request draft', ref, { deviceCode: fv.deviceCode });
+      S.form = null;
+      await refreshAll(`${ref} queued. The Draft is created in the registry the next time the export runs on GitHub.`);
+    });
+    if (a === 'reqact') run(async () => {
+      const r = S.data.requests.find(x => x.id === Number(el.dataset.id)), act = el.dataset.act;
+      if (!r) return;
+      const asks = { cancel: `Remove ${r.ref} from the list?`, delete: `Delete the draft ${r.ref}? It is removed from the registry on the next export, and its certificates are freed.`, withdraw: `Mark ${r.ref} as withdrawn? You also need to withdraw it in the registry.` };
+      if (!confirm(asks[act])) return;
+      const { siteId, lists } = await resolve();
+      if (act === 'cancel') await removeItem('requests', r.id);
+      else await graph('PATCH', `/sites/${siteId}/lists/${lists.requests}/items/${r.id}/fields`, { RequestStatus: act === 'delete' ? 'delete-requested' : 'withdrawn', ErrorMessage: '' });
+      await log(act === 'cancel' ? `Removed the request ${r.ref}` : act === 'delete' ? `Asked for the draft ${r.ref} to be deleted` : `Marked ${r.ref} as withdrawn`, r.ref);
+      await refreshAll(act === 'delete' ? `${r.ref} will be deleted from the registry on the next export.` : act === 'withdraw' ? `${r.ref} marked as withdrawn.` : `${r.ref} removed.`);
+    });
     if (a === 'cancelimport') { S.pending = null; S.pendingFile = null; S.err = ''; render(); return; }
     if (a === 'earmark') run(async () => {
       if (!S.fv.client) { S.err = 'Choose a client first.'; render(); return; }
