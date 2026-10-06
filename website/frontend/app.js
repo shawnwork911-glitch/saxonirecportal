@@ -113,8 +113,20 @@
   async function removeItem(key, id) { const { siteId, lists } = await resolve(); return graph('DELETE', `/sites/${siteId}/lists/${lists[key]}/items/${id}`); }
 
   // Every action goes in the activity log. SharePoint records who added each entry.
+  // The action itself has already been saved by the time this runs, so a problem with
+  // the log never turns a completed action into an error. If SharePoint rejects a
+  // column, the entry is saved without it and the person is told what needs fixing.
   async function log(action, ref, detail) {
-    await addItem('activity', { Title: String(action).slice(0, 255), Ref: ref ? String(ref).slice(0, 100) : '', PersonName: S.me.name, PersonEmail: S.me.email, Detail: detail ? JSON.stringify(detail).slice(0, 60000) : '', Ok: true });
+    const fields = { Title: String(action).slice(0, 255), Ref: ref ? String(ref).slice(0, 100) : '', PersonName: S.me.name, PersonEmail: S.me.email, Detail: detail ? JSON.stringify(detail).slice(0, 60000) : '', Ok: true };
+    try { await addItem('activity', fields); return; } catch (first) {
+      const bad = [];
+      for (const k of Object.keys(fields).filter(k => k !== 'Title')) {
+        const trial = Object.fromEntries(Object.entries(fields).filter(([key]) => key !== k));
+        try { await addItem('activity', trial); bad.push(k); S.logWarning = `Done, but the activity log rejected its "${k}" column. Fix it in IREC Activity > List settings (see the setup guide).`; return; } catch (e) { /* try the next column */ }
+      }
+      try { await addItem('activity', { Title: fields.Title }); S.logWarning = 'Done, but the activity log only accepted the description. Check the IREC Activity columns (see the setup guide).'; }
+      catch (e) { S.logWarning = `Done, but it could not be written to the activity log: ${first.message}`; }
+    }
   }
 
   async function readFile(name) {
@@ -447,7 +459,11 @@
       if (S.detail && S.detail.id === uid) { S.remarks = mapped; S.remarksKey = uid; render(); }
     } catch (e) { say(e.message, true); }
   }
-  async function refreshAll(msg) { await load(); render(); if (msg) say(msg); }
+  async function refreshAll(msg) {
+    await load(); render();
+    if (S.logWarning) { const w = S.logWarning; S.logWarning = null; say(w, true); }
+    else if (msg) say(msg);
+  }
 
   // ---------- events ----------
   document.addEventListener('click', e => {
@@ -492,6 +508,7 @@
       await log('Added a remark', short(el.dataset.id), { itemUid: el.dataset.id });
       S.fv.remark = ''; S.audit = (await items('activity', { orderby: 'fields/Created desc', top: 300 })).map(x => ({ at: x.createdAt, name: x.createdBy.name, action: x.f.Title, ref: x.f.Ref, ok: x.f.Ok !== false }));
       await loadRemarks(el.dataset.id);
+      if (S.logWarning) { const w = S.logWarning; S.logWarning = null; say(w, true); }
     });
     if (a === 'doimport') run(async () => {
       const p = S.pending;
