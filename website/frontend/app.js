@@ -129,14 +129,25 @@
     }
   }
 
+  // Reads a file from the Portal data folder. SharePoint doesn't always include the
+  // temporary download link, so ask for the full item, then fall back to downloading
+  // through Microsoft Graph directly. Never fetch a missing link.
   async function readFile(name) {
     const { driveId } = await resolve();
     let meta;
-    try { meta = await graph('GET', `/drives/${driveId}/root:/${enc(`${C.folder}/${name}`)}?$select=id,@microsoft.graph.downloadUrl`); }
+    try { meta = await graph('GET', `/drives/${driveId}/root:/${enc(`${C.folder}/${name}`)}`); }
     catch (e) { if (e.notFound) return null; throw e; }
-    const res = await fetch(meta['@microsoft.graph.downloadUrl']);
-    if (!res.ok) throw new Error(`Could not download ${name} from SharePoint (HTTP ${res.status}).`);
-    return res.json();
+    let res = null;
+    const link = meta['@microsoft.graph.downloadUrl'];
+    if (link) {
+      try { res = await fetch(link); } catch (e) { res = null; }
+    }
+    if (!res || !res.ok) {
+      res = await fetch(`${GRAPH}/drives/${driveId}/items/${meta.id}/content`, { headers: { Authorization: `Bearer ${await token()}` } });
+    }
+    if (!res.ok) throw new Error(`Could not download ${name} from SharePoint (HTTP ${res.status}). Try Reload; if it persists, check you can open the "${C.folder}" folder in SharePoint.`);
+    try { return await res.json(); }
+    catch (e) { throw new Error(`${name} in SharePoint is not readable data. Run the export again, or import the downloaded file.`); }
   }
 
   async function writeFile(name, text) {
