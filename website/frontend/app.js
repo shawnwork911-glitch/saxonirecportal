@@ -248,8 +248,8 @@
       try { p = JSON.parse(r.f.Payload || '{}'); } catch (e) { p = {}; }
       try { res = JSON.parse(r.f.Result || '{}'); } catch (e) { res = {}; }
       const summary = kind === 'issue'
-        ? { deviceName: res.deviceName || (devs[p.deviceCode] || {}).name || p.deviceCode, startDate: p.startDate, endDate: p.endDate, volume: Number(p.volume), recipientAccount: p.recipientAccount }
-        : { type: raw === 'transfer' ? 'Transfer' : 'Redemption', party: res.beneficiaryName || (bens[p.beneficiaryUid] || {}).name || res.destinationAccount || p.destinationAccount || '', volume: Number(p.volume), itemUids: p.itemUids || [] };
+        ? { deviceName: res.deviceName || (devs[p.deviceCode] || {}).name || p.deviceCode, startDate: p.startDate, endDate: p.endDate, volume: Number(p.volume) || Number(res.volume) || 0, recipientAccount: p.recipientAccount }
+        : { type: raw === 'transfer' ? 'Transfer' : 'Redemption', party: res.beneficiaryName || (bens[p.beneficiaryUid] || {}).name || res.destinationAccount || p.destinationAccount || '', volume: Number(p.volume) || Number(res.volume) || 0, itemUids: p.itemUids || [] };
       return { id: r.id, kind, ref: refOf(kind, r.id), status: r.f.RequestStatus || 'requested', summary, error: r.f.ErrorMessage || '', registryUid: r.f.RegistryUid || null, createdBy: r.createdBy, createdAt: r.createdAt };
     }).filter(r => r.status !== 'deleted' && r.status !== 'done').sort((a, b) => b.id - a.id);
   }
