@@ -51,7 +51,7 @@
   const enc = s => s.split('/').map(encodeURIComponent).join('/');
 
   function gate(title, text, button) {
-    $app.innerHTML = `<div class="gate"><main class="gate-card"><div><img class="brand-logo" src="logo.png" alt="Treck, Saxon Renewables"><div class="brand-sub">I-REC portal</div></div>
+    $app.innerHTML = `<div class="gate"><main class="gate-card"><div><img class="brand-logo" src="logo.png" alt="IREC, Saxon Renewables"></div>
       <h1>${esc(title)}</h1><p>${esc(text)}</p>${button || ''}</main></div>`;
   }
 
@@ -556,7 +556,7 @@
     const screens = { dashboard: viewDashboard, inventory: viewInventory, reservations: viewReservations, issuance: viewIssuance, audit: viewAudit, import: viewImport };
     if (S.screen === 'import' && !D.canEdit) S.screen = 'dashboard';
     $app.innerHTML = `<div class="layout">
-      <aside class="side"><div class="brand"><img class="brand-logo" src="logo.png" alt="Treck, Saxon Renewables"><div class="brand-sub">I-REC portal</div></div>${viewNav(D)}${viewSync()}</aside>
+      <aside class="side"><div class="brand"><img class="brand-logo" src="logo.png" alt="IREC, Saxon Renewables"></div>${viewNav(D)}${viewSync()}</aside>
       <div class="main">
         <header class="top"><h1>${TITLES[S.screen]}</h1><div class="who"><div class="avatar" aria-hidden="true">${esc(initials(D.me.name))}</div>
           <div class="who-text"><span class="n">${esc(D.me.name)}</span><span class="r">${ROLE_LABEL[D.me.role]}</span></div>
