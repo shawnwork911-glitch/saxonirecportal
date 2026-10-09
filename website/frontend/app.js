@@ -25,8 +25,9 @@
   const TITLES = { dashboard: 'Overview', inventory: 'Inventory', reservations: 'Redemptions and transfers', issuance: 'Issuance', audit: 'Activity log', import: 'Import registry data' };
   const HOME = location.origin + location.pathname.replace(/index\.html$/, '');
 
+  const PAGE_SIZE = 50;
   const S = { me: null, data: null, audit: [], screen: 'dashboard', sel: new Set(), detail: null, form: null, err: '', toast: null,
-    f: { q: '', device: '', period: '', status: '' }, remarks: [], remarksKey: '', fv: {}, busy: false, pending: null };
+    f: { q: '', device: '', period: '', status: '' }, page: 1, remarks: [], remarksKey: '', fv: {}, busy: false, pending: null };
   const $app = document.getElementById('app');
   let msal = null, ids = null;
 
@@ -248,8 +249,8 @@
       try { p = JSON.parse(r.f.Payload || '{}'); } catch (e) { p = {}; }
       try { res = JSON.parse(r.f.Result || '{}'); } catch (e) { res = {}; }
       const summary = kind === 'issue'
-        ? { deviceName: res.deviceName || (devs[p.deviceCode] || {}).name || p.deviceCode, startDate: p.startDate, endDate: p.endDate, volume: Number(p.volume) || Number(res.volume) || 0, recipientAccount: p.recipientAccount }
-        : { type: raw === 'transfer' ? 'Transfer' : 'Redemption', party: res.beneficiaryName || (bens[p.beneficiaryUid] || {}).name || res.destinationAccount || p.destinationAccount || '', volume: Number(p.volume) || Number(res.volume) || 0, itemUids: p.itemUids || [] };
+        ? { deviceName: res.deviceName || (devs[p.deviceCode] || {}).name || p.deviceCode, startDate: p.startDate, endDate: p.endDate, volume: Number(p.volume), recipientAccount: p.recipientAccount }
+        : { type: raw === 'transfer' ? 'Transfer' : 'Redemption', party: res.beneficiaryName || (bens[p.beneficiaryUid] || {}).name || res.destinationAccount || p.destinationAccount || '', volume: Number(p.volume), itemUids: p.itemUids || [] };
       return { id: r.id, kind, ref: refOf(kind, r.id), status: r.f.RequestStatus || 'requested', summary, error: r.f.ErrorMessage || '', registryUid: r.f.RegistryUid || null, createdBy: r.createdBy, createdAt: r.createdAt };
     }).filter(r => r.status !== 'deleted' && r.status !== 'done').sort((a, b) => b.id - a.id);
   }
@@ -349,12 +350,23 @@
     </section>`;
   }
 
+  function pager(total, page, pages, start, end) {
+    if (total <= PAGE_SIZE) return '';
+    const b = (p, label, off) => `<button class="btn sm" ${attr({ a: 'page', p })} ${off ? 'disabled' : ''}>${label}</button>`;
+    return `<div class="pager"><span class="muted small">Showing ${start + 1}–${end} of ${total}</span><div class="actions">${b('first', 'First', page <= 1)}${b('prev', 'Previous', page <= 1)}<span class="small">Page ${page} of ${pages}</span>${b('next', 'Next', page >= pages)}${b('last', 'Last', page >= pages)}</div></div>`;
+  }
+
   function viewInventory(D) {
     const devices = [...new Set(D.items.map(i => i.deviceName).filter(Boolean))].sort();
     const periods = [...new Map(D.items.filter(i => i.periodStart).map(i => [`${i.periodStart}|${i.periodEnd}`, period(i.periodStart, i.periodEnd)])).entries()].sort((a, b) => b[0].localeCompare(a[0]));
     const qq = S.f.q.trim().toLowerCase();
     const rows = D.items.filter(i => (!S.f.device || i.deviceName === S.f.device) && (!S.f.period || `${i.periodStart}|${i.periodEnd}` === S.f.period) && (!S.f.status || i.status === S.f.status)
       && (!qq || `${i.uid} ${i.deviceName} ${i.accountName} ${i.earmark ? i.earmark.client : ''}`.toLowerCase().includes(qq)));
+    const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+    S.page = Math.min(Math.max(1, S.page || 1), pages);
+    const pStart = (S.page - 1) * PAGE_SIZE, pEnd = Math.min(pStart + PAGE_SIZE, rows.length);
+    const pageRows = rows.slice(pStart, pEnd);
+    const pagerHtml = pager(rows.length, S.page, pages, pStart, pEnd);
     const selected = [...S.sel].map(u => D.byUid[u]).filter(Boolean);
     const selAvail = sum(selected, i => i.available);
     const det = S.detail && S.detail.kind === 'item' ? D.byUid[S.detail.id] : null;
@@ -371,14 +383,16 @@
       ${S.form === 'earmark' ? viewEarmarkForm(D, selAvail) : ''}
       ${S.form === 'res' ? viewResForm(D, selected, selAvail) : ''}
       <div class="row">
-        <section class="card grow"><div class="card-h"><h2>Certificate blocks</h2><span class="muted small">${rows.length} shown, ${fmt(sum(rows, i => i.volume))} MWh</span></div>
-          <div class="tablewrap"><table><thead><tr><th><span class="sr">Select</span></th><th>Certificate</th><th>Device</th><th>Period</th><th>Account</th><th class="num">Volume</th><th class="num">Available</th><th>Status</th><th>Earmarked for</th></tr></thead><tbody>
-          ${rows.map(i => `<tr class="${det && det.uid === i.uid ? 'current' : S.sel.has(i.uid) ? 'sel' : ''}">
+        <section class="card grow" id="inv-card"><div class="card-h"><h2>Certificate blocks</h2><span class="muted small">${rows.length} shown, ${fmt(sum(rows, i => i.volume))} MWh</span></div>
+          ${pagerHtml}<div class="tscroll off" id="inv-top" aria-hidden="true"><div></div></div>
+          <div class="tablewrap" id="inv-wrap"><table><thead><tr><th><span class="sr">Select</span></th><th>Certificate</th><th>Device</th><th>Period</th><th>Account</th><th class="num">Volume</th><th class="num">Available</th><th>Status</th><th>Earmarked for</th></tr></thead><tbody>
+          ${pageRows.map(i => `<tr class="${det && det.uid === i.uid ? 'current' : S.sel.has(i.uid) ? 'sel' : ''}">
             <td><input type="checkbox" ${attr({ a: 'toggle', id: i.uid })} ${S.sel.has(i.uid) ? 'checked' : ''} ${!D.canEdit || !i.trade || i.available <= 0 ? 'disabled' : ''} aria-label="Select ${esc(short(i.uid))}"></td>
             <td><button class="linkbtn mono" ${attr({ a: 'open', id: i.uid })}>${esc(short(i.uid))}</button></td>
             <td>${esc(i.deviceName || '–')}</td><td>${period(i.periodStart, i.periodEnd)}</td><td>${esc(i.accountName)}</td>
             <td class="num">${fmt(i.volume)}</td><td class="num"><b>${i.trade ? fmt(i.available) : '–'}</b></td><td>${pill(i.status)}</td><td>${esc(i.earmark ? i.earmark.client : '–')}</td></tr>`).join('')}
           </tbody></table>${rows.length ? '' : '<p class="empty">No certificate blocks match these filters.</p>'}</div>
+          ${pagerHtml}
         </section>
         ${det ? viewItemDetail(D, det) : ''}
       </div>`;
@@ -538,6 +552,8 @@
     const active = document.activeElement;
     const focusId = active && active.id !== 'imp-file' && active.id;
     const caret = active && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
+    const oldWrap = document.getElementById('inv-wrap');
+    const hScroll = oldWrap ? oldWrap.scrollLeft : 0;
     const screens = { dashboard: viewDashboard, inventory: viewInventory, reservations: viewReservations, issuance: viewIssuance, audit: viewAudit, import: viewImport };
     if (S.screen === 'import' && !D.canEdit) S.screen = 'dashboard';
     $app.innerHTML = `<div class="layout">
@@ -550,11 +566,29 @@
         <main class="content">${screens[S.screen](D)}</main>
       </div></div>`;
     document.querySelectorAll('[data-pct]').forEach(el => { el.style.width = el.dataset.pct + '%'; });
+    setupTopScroll(hScroll);
     if (focusId) {
       const el = document.getElementById(focusId);
       if (el) { el.focus(); if (caret && typeof el.setSelectionRange === 'function') { try { el.setSelectionRange(caret[0], caret[1]); } catch (e) { /* not a text field */ } } }
     }
   }
+
+  // Mirrored scroll bar above the Inventory table, kept in sync with the table's own bar.
+  function setupTopScroll(restore) {
+    const top = document.getElementById('inv-top'), wrap = document.getElementById('inv-wrap');
+    if (!top || !wrap) return;
+    const inner = top.firstElementChild;
+    const measure = () => {
+      inner.style.width = wrap.scrollWidth + 'px';
+      top.classList.toggle('off', wrap.scrollWidth <= wrap.clientWidth + 1);
+    };
+    let lock = false;
+    top.addEventListener('scroll', () => { if (lock) { lock = false; return; } if (wrap.scrollLeft !== top.scrollLeft) { lock = true; wrap.scrollLeft = top.scrollLeft; } });
+    wrap.addEventListener('scroll', () => { if (lock) { lock = false; return; } if (top.scrollLeft !== wrap.scrollLeft) { lock = true; top.scrollLeft = wrap.scrollLeft; } });
+    measure();
+    if (restore) { wrap.scrollLeft = restore; top.scrollLeft = restore; }
+  }
+  window.addEventListener('resize', () => { const top = document.getElementById('inv-top'), wrap = document.getElementById('inv-wrap'); if (top && wrap) { top.firstElementChild.style.width = wrap.scrollWidth + 'px'; top.classList.toggle('off', wrap.scrollWidth <= wrap.clientWidth + 1); } });
 
   async function loadRemarks(uid) {
     S.remarksKey = '';
@@ -583,6 +617,13 @@
     if (!S.data) return;
     if (a === 'go') { S.screen = el.dataset.s; S.detail = null; S.form = null; S.err = ''; S.pending = null; render(); window.scrollTo(0, 0); return; }
     if (a === 'open') { S.screen = 'inventory'; S.detail = { kind: 'item', id: el.dataset.id }; S.form = null; S.fv.remark = ''; render(); loadRemarks(el.dataset.id); return; }
+    if (a === 'page') {
+      const p = el.dataset.p;
+      S.page = p === 'first' ? 1 : p === 'prev' ? S.page - 1 : p === 'next' ? S.page + 1 : 1e9;
+      render();
+      const c = document.getElementById('inv-card'); if (c) c.scrollIntoView({ block: 'start' });
+      return;
+    }
     if (a === 'close') { S.detail = null; render(); return; }
     if (a === 'toast') { S.toast = null; render(); return; }
     if (a === 'clearsel') { S.sel.clear(); render(); return; }
@@ -688,7 +729,7 @@
   document.addEventListener('input', e => {
     const t = e.target;
     if (t.dataset.f) { S.fv[t.dataset.f] = t.value; if (S.err) S.err = ''; return; }
-    if (t.dataset.filter === 'q') { S.f.q = t.value; clearTimeout(filterTimer); filterTimer = setTimeout(render, 200); }
+    if (t.dataset.filter === 'q') { S.f.q = t.value; S.page = 1; clearTimeout(filterTimer); filterTimer = setTimeout(render, 200); }
   });
   document.addEventListener('change', e => {
     const t = e.target;
@@ -701,7 +742,7 @@
       return;
     }
     if (t.dataset.f) { S.fv[t.dataset.f] = t.value; return; }
-    if (t.dataset.filter && t.dataset.filter !== 'q') { S.f[t.dataset.filter] = t.value; render(); }
+    if (t.dataset.filter && t.dataset.filter !== 'q') { S.f[t.dataset.filter] = t.value; S.page = 1; render(); }
   });
 
   // ---------- start ----------
