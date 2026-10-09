@@ -105,7 +105,7 @@ tr.current td{background:#EEF6F4}tr.sel td{background:#F5FAF8}
 .p-queued{background:#E2ECF8;color:#1A4F8A}
 .note.pad{margin:12px 18px 0}
 
-.tscroll{overflow-x:auto;overflow-y:hidden;height:16px;border-bottom:1px solid var(--line2)}
+.tscroll{overflow-x:auto;overflow-y:hidden;height:16px;border-bottom:1px solid var(--line2);position:sticky;top:0;z-index:5;background:var(--surface)}
 .tscroll>div{height:1px}
 .tscroll.off{display:none}
 .pager{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:10px 18px;border-bottom:1px solid var(--line2)}
