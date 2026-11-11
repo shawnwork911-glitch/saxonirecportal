@@ -478,16 +478,16 @@
     const txNote = tq ? `${txHits.length} match${txHits.length === 1 ? '' : 'es'}${txHits.length > 100 ? ', showing the latest 100' : ''}` : `Latest ${tx.length}`;
     return `${viewRequestsTable(D, S.data.requests.filter(r => r.kind === 'reservation'), 'Requests from the portal')}
       <p class="note">Drafts are submitted and approved in the registry. The tables below show the registry as of the last refresh.</p>
-      <section class="card"><div class="card-h"><h2>Drafts and submissions in the registry</h2><span class="muted small">${res.length}</span></div><div class="tablewrap"><table>
-        <thead><tr><th>Registry ID</th><th>Type</th><th>Beneficiary or receiving account</th><th>From</th><th class="num">Volume</th><th>Status</th></tr></thead><tbody>
-        ${res.map(r => `<tr><td class="mono">${esc(short(r.uid))}</td><td>${esc(r.type || '–')}</td><td class="wrap">${esc(r.beneficiary || r.destination || '–')}</td><td class="mono">${esc(r.source || '–')}</td><td class="num">${fmt(r.volume)}</td><td>${regPill(r.status)}</td></tr>`).join('')}
-        </tbody></table>${res.length ? '' : '<p class="empty">No drafts or submissions in the imported data.</p>'}</div></section>
       <section class="card"><div class="card-h"><h2>Completed transactions</h2><span class="muted small">${txNote}</span></div>
         <div class="filters"><div class="wide"><label class="lbl" for="f-tq">Search transactions</label><input id="f-tq" class="fld" type="search" placeholder="Transaction ID, account or beneficiary" value="${esc(S.f.tq)}" data-filter="tq"></div></div>
         <div class="tablewrap"><table>
         <thead><tr><th>Transaction ID</th><th>Date</th><th>Type</th><th>From</th><th>To</th><th>Beneficiary</th><th class="num">Volume</th></tr></thead><tbody>
         ${tx.map(t => `<tr><td class="mono">${esc(t.uid || '–')}</td><td>${dDate(t.timestamp)}</td><td>${esc(t.type)}</td><td class="mono">${esc(t.source)}</td><td class="mono">${esc(t.destination)}</td><td class="wrap">${esc(t.beneficiary || '–')}</td><td class="num">${fmt(t.volume)}</td></tr>`).join('')}
-        </tbody></table>${tx.length ? '' : `<p class="empty">${tq ? 'No transactions match this search.' : 'No transactions in the imported data.'}</p>`}</div></section>`;
+        </tbody></table>${tx.length ? '' : `<p class="empty">${tq ? 'No transactions match this search.' : 'No transactions in the imported data.'}</p>`}</div></section>
+      <section class="card"><div class="card-h"><h2>Drafts and submissions in the registry</h2><span class="muted small">${res.length}</span></div><div class="tablewrap"><table>
+        <thead><tr><th>Registry ID</th><th>Type</th><th>Beneficiary or receiving account</th><th>From</th><th class="num">Volume</th><th>Status</th></tr></thead><tbody>
+        ${res.map(r => `<tr><td class="mono">${esc(short(r.uid))}</td><td>${esc(r.type || '–')}</td><td class="wrap">${esc(r.beneficiary || r.destination || '–')}</td><td class="mono">${esc(r.source || '–')}</td><td class="num">${fmt(r.volume)}</td><td>${regPill(r.status)}</td></tr>`).join('')}
+        </tbody></table>${res.length ? '' : '<p class="empty">No drafts or submissions in the imported data.</p>'}</div></section>`;
   }
 
   function viewIssueForm(D) {
