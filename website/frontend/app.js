@@ -356,12 +356,43 @@
     return `<div class="pager"><span class="muted small">Showing ${start + 1}–${end} of ${total}</span><div class="actions">${b('first', 'First', page <= 1)}${b('prev', 'Previous', page <= 1)}<span class="small">Page ${page} of ${pages}</span>${b('next', 'Next', page >= pages)}${b('last', 'Last', page >= pages)}</div></div>`;
   }
 
+  // Registry IDs are ULIDs: the first 10 characters are the creation time in milliseconds.
+  // The export doesn't say which blocks a transaction created, but the registry creates them
+  // within a few seconds of the transaction itself, before the next transaction starts.
+  const ULID = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  function ulidMs(uid) {
+    const u = String(uid || '').toUpperCase();
+    if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(u)) return null;
+    let n = 0;
+    for (const c of u.slice(0, 10)) n = n * 32 + ULID.indexOf(c);
+    return n;
+  }
+  const TX_WINDOW_MS = 60000;
+  function txBlocks(D, tx) {
+    const start = ulidMs(tx.uid);
+    if (start == null) return [];
+    let end = start + TX_WINDOW_MS;
+    for (const t of S.data.transactions) { const m = ulidMs(t.uid); if (m != null && m > start && m < end) end = m; }
+    return D.items.filter(i => { const m = ulidMs(i.uid); return m != null && m >= start && m < end; });
+  }
+  const selectable = (D, i) => D.canEdit && i.trade && i.available > 0;
+
+  // The Inventory filters. A full transaction ID in Search lists the blocks that transaction created.
+  function inventoryRows(D) {
+    const qq = S.f.q.trim().toLowerCase();
+    const tx = qq.length === 26 ? S.data.transactions.find(t => String(t.uid).toLowerCase() === qq) : null;
+    const base = tx ? txBlocks(D, tx) : D.items;
+    const rows = base.filter(i => (!S.f.device || i.deviceName === S.f.device) && (!S.f.period || `${i.periodStart}|${i.periodEnd}` === S.f.period) && (!S.f.status || i.status === S.f.status)
+      && (tx || !qq || `${i.uid} ${i.deviceName} ${i.accountName} ${i.earmark ? i.earmark.client : ''}`.toLowerCase().includes(qq)));
+    return { rows, tx, txAll: tx ? base : null };
+  }
+
   function viewInventory(D) {
     const devices = [...new Set(D.items.map(i => i.deviceName).filter(Boolean))].sort();
     const periods = [...new Map(D.items.filter(i => i.periodStart).map(i => [`${i.periodStart}|${i.periodEnd}`, period(i.periodStart, i.periodEnd)])).entries()].sort((a, b) => b[0].localeCompare(a[0]));
-    const qq = S.f.q.trim().toLowerCase();
-    const rows = D.items.filter(i => (!S.f.device || i.deviceName === S.f.device) && (!S.f.period || `${i.periodStart}|${i.periodEnd}` === S.f.period) && (!S.f.status || i.status === S.f.status)
-      && (!qq || `${i.uid} ${i.deviceName} ${i.accountName} ${i.earmark ? i.earmark.client : ''}`.toLowerCase().includes(qq)));
+    const { rows, tx, txAll } = inventoryRows(D);
+    const pickable = rows.filter(i => selectable(D, i));
+    const allPicked = pickable.length > 0 && pickable.every(i => S.sel.has(i.uid));
     const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
     S.page = Math.min(Math.max(1, S.page || 1), pages);
     const pStart = (S.page - 1) * PAGE_SIZE, pEnd = Math.min(pStart + PAGE_SIZE, rows.length);
@@ -369,21 +400,26 @@
     const pagerHtml = pager(rows.length, S.page, pages, pStart, pEnd);
     const selected = [...S.sel].map(u => D.byUid[u]).filter(Boolean);
     const selAvail = sum(selected, i => i.available);
+    const selAccounts = new Set(selected.map(i => i.accountCode)).size;
     const det = S.detail && S.detail.kind === 'item' ? D.byUid[S.detail.id] : null;
     return `<div class="card filters">
-        <div class="wide"><label class="lbl" for="f-q">Search</label><input id="f-q" class="fld" type="search" placeholder="Certificate ID, device, account or client" value="${esc(S.f.q)}" data-filter="q"></div>
+        <div class="wide"><label class="lbl" for="f-q">Search</label><input id="f-q" class="fld" type="search" placeholder="Certificate ID, transaction ID, device, account or client" value="${esc(S.f.q)}" data-filter="q"></div>
         <div><label class="lbl" for="f-device">Device</label><select id="f-device" class="fld" data-filter="device">${opt('', 'All devices', S.f.device)}${devices.map(x => opt(x, x, S.f.device)).join('')}</select></div>
         <div><label class="lbl" for="f-period">Production period</label><select id="f-period" class="fld" data-filter="period">${opt('', 'All periods', S.f.period)}${periods.map(([k, l]) => opt(k, l, S.f.period)).join('')}</select></div>
         <div><label class="lbl" for="f-status">Status</label><select id="f-status" class="fld" data-filter="status">${opt('', 'All statuses', S.f.status)}${Object.keys(LABEL).map(k => opt(k, LABEL[k], S.f.status)).join('')}</select></div>
       </div>
-      ${D.canEdit && selected.length && !S.form ? `<div class="selbar"><b>${selected.length} selected, ${fmt(selAvail)} MWh available</b><div class="actions">
+      ${tx ? viewTxNote(D, tx, txAll) : ''}
+      ${D.canEdit && selected.length && !S.form ? `<div class="selbar"><div><b>${selected.length} selected, ${fmt(selAvail)} MWh available</b>${selAccounts > 1 ? `<div class="small">These are in ${selAccounts} accounts. A redemption or transfer request must use blocks from one account.</div>` : ''}</div><div class="actions">
         <button class="btn primary" ${attr({ a: 'form', f: 'earmark' })}>Earmark for a client</button>
         ${S.data.hasRequests ? `<button class="btn primary" ${attr({ a: 'form', f: 'res' })}>Request a redemption or transfer</button>` : ''}
         <button class="btn" data-a="clearsel">Clear selection</button></div></div>` : ''}
       ${S.form === 'earmark' ? viewEarmarkForm(D, selAvail) : ''}
       ${S.form === 'res' ? viewResForm(D, selected, selAvail) : ''}
       <div class="row">
-        <section class="card grow" id="inv-card"><div class="card-h"><h2>Certificate blocks</h2><span class="muted small">${rows.length} shown, ${fmt(sum(rows, i => i.volume))} MWh</span></div>
+        <section class="card grow" id="inv-card"><div class="card-h"><h2>Certificate blocks</h2><span class="muted small">${rows.length} shown, ${fmt(sum(rows, i => i.volume))} MWh</span>
+            ${D.canEdit && pickable.length ? (allPicked
+              ? `<button class="btn sm" data-a="unselmatch">Unselect all ${pickable.length} matching</button>`
+              : `<button class="btn sm" data-a="selmatch">Select all ${pickable.length} matching (${fmt(sum(pickable, i => i.available))} MWh available)</button>`) : ''}</div>
           ${pagerHtml}<div class="tscroll off" id="inv-top" aria-hidden="true"><div></div></div>
           <div class="tablewrap" id="inv-wrap"><table><thead><tr><th><span class="sr">Select</span></th><th>Certificate</th><th>Device</th><th>Period</th><th>Account</th><th class="num">Volume</th><th class="num">Available</th><th>Status</th><th>Earmarked for</th></tr></thead><tbody>
           ${pageRows.map(i => `<tr class="${det && det.uid === i.uid ? 'current' : S.sel.has(i.uid) ? 'sel' : ''}">
@@ -395,6 +431,19 @@
         </section>
         ${det ? viewItemDetail(D, det) : ''}
       </div>`;
+  }
+
+  function viewTxNote(D, tx, blocks) {
+    const ok = blocks.filter(i => selectable(D, i));
+    const vol = sum(blocks, i => i.volume);
+    const when = dTime(tx.timestamp);
+    const head = `Transaction <span class="mono">${esc(tx.uid)}</span>: ${esc(tx.type)} of ${fmt(tx.volume)} MWh from <span class="mono">${esc(tx.source || '–')}</span> to <span class="mono">${esc(tx.destination || '–')}</span>, ${esc(when)}.`;
+    let body;
+    if (!blocks.length) body = 'No certificate blocks from this transaction are in the imported data.';
+    else body = `It created ${blocks.length} certificate block${blocks.length === 1 ? '' : 's'} (${fmt(vol)} MWh)${Math.abs(vol - tx.volume) > 0.001 ? ', which can include what was left over in the sending account' : ''}. `
+      + (ok.length ? `${ok.length} ${ok.length === 1 ? 'is' : 'are'} in a Saxon trade account with ${fmt(sum(ok, i => i.available))} MWh available to select.`
+        : 'None of them are in a Saxon trade account with volume available, so they can\'t be selected. They may have been transferred on or redeemed since.');
+    return `<p class="note ${ok.length ? '' : 'warn'}">${head} ${body}</p>`;
   }
 
   function viewResForm(D, selected, selAvail) {
@@ -633,6 +682,11 @@
     if (a === 'close') { S.detail = null; render(); return; }
     if (a === 'toast') { S.toast = null; render(); return; }
     if (a === 'clearsel') { S.sel.clear(); render(); return; }
+    if (a === 'selmatch' || a === 'unselmatch') {
+      const D = derive();
+      inventoryRows(D).rows.filter(i => selectable(D, i)).forEach(i => { if (a === 'selmatch') S.sel.add(i.uid); else S.sel.delete(i.uid); });
+      render(); return;
+    }
     if (a === 'cancel') { S.form = null; S.err = ''; render(); return; }
     if (a === 'form') {
       S.form = el.dataset.f; S.err = ''; S.detail = null;
