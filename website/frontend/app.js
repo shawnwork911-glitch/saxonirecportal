@@ -27,7 +27,7 @@
 
   const PAGE_SIZE = 50;
   const S = { me: null, data: null, audit: [], screen: 'dashboard', sel: new Set(), detail: null, form: null, err: '', toast: null,
-    f: { q: '', device: '', period: '', status: '' }, page: 1, remarks: [], remarksKey: '', fv: {}, busy: false, pending: null };
+    f: { q: '', device: '', period: '', status: '', tq: '' }, page: 1, remarks: [], remarksKey: '', fv: {}, busy: false, pending: null };
   const $app = document.getElementById('app');
   let msal = null, ids = null;
 
@@ -470,17 +470,24 @@
 
   function viewReservations(D) {
     const res = S.data.reservations.slice().sort((a, b) => String(a.status).localeCompare(String(b.status)));
-    const tx = S.data.transactions.slice().sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))).slice(0, 100);
+    // Without a search, show the latest 100. With one, search every transaction in the imported data.
+    const tq = S.f.tq.trim().toLowerCase();
+    const txAll = S.data.transactions.slice().sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+    const txHits = tq ? txAll.filter(t => `${t.uid} ${t.type} ${t.source} ${t.destination} ${t.beneficiary || ''} ${t.purpose || ''}`.toLowerCase().includes(tq)) : txAll;
+    const tx = txHits.slice(0, 100);
+    const txNote = tq ? `${txHits.length} match${txHits.length === 1 ? '' : 'es'}${txHits.length > 100 ? ', showing the latest 100' : ''}` : `Latest ${tx.length}`;
     return `${viewRequestsTable(D, S.data.requests.filter(r => r.kind === 'reservation'), 'Requests from the portal')}
       <p class="note">Drafts are submitted and approved in the registry. The tables below show the registry as of the last refresh.</p>
       <section class="card"><div class="card-h"><h2>Drafts and submissions in the registry</h2><span class="muted small">${res.length}</span></div><div class="tablewrap"><table>
         <thead><tr><th>Registry ID</th><th>Type</th><th>Beneficiary or receiving account</th><th>From</th><th class="num">Volume</th><th>Status</th></tr></thead><tbody>
         ${res.map(r => `<tr><td class="mono">${esc(short(r.uid))}</td><td>${esc(r.type || '–')}</td><td class="wrap">${esc(r.beneficiary || r.destination || '–')}</td><td class="mono">${esc(r.source || '–')}</td><td class="num">${fmt(r.volume)}</td><td>${regPill(r.status)}</td></tr>`).join('')}
         </tbody></table>${res.length ? '' : '<p class="empty">No drafts or submissions in the imported data.</p>'}</div></section>
-      <section class="card"><div class="card-h"><h2>Completed transactions</h2><span class="muted small">Latest ${tx.length}</span></div><div class="tablewrap"><table>
-        <thead><tr><th>Date</th><th>Type</th><th>From</th><th>To</th><th>Beneficiary</th><th class="num">Volume</th></tr></thead><tbody>
-        ${tx.map(t => `<tr><td>${dDate(t.timestamp)}</td><td>${esc(t.type)}</td><td class="mono">${esc(t.source)}</td><td class="mono">${esc(t.destination)}</td><td class="wrap">${esc(t.beneficiary || '–')}</td><td class="num">${fmt(t.volume)}</td></tr>`).join('')}
-        </tbody></table>${tx.length ? '' : '<p class="empty">No transactions in the imported data.</p>'}</div></section>`;
+      <section class="card"><div class="card-h"><h2>Completed transactions</h2><span class="muted small">${txNote}</span></div>
+        <div class="filters"><div class="wide"><label class="lbl" for="f-tq">Search transactions</label><input id="f-tq" class="fld" type="search" placeholder="Transaction ID, account or beneficiary" value="${esc(S.f.tq)}" data-filter="tq"></div></div>
+        <div class="tablewrap"><table>
+        <thead><tr><th>Transaction ID</th><th>Date</th><th>Type</th><th>From</th><th>To</th><th>Beneficiary</th><th class="num">Volume</th></tr></thead><tbody>
+        ${tx.map(t => `<tr><td class="mono">${esc(t.uid || '–')}</td><td>${dDate(t.timestamp)}</td><td>${esc(t.type)}</td><td class="mono">${esc(t.source)}</td><td class="mono">${esc(t.destination)}</td><td class="wrap">${esc(t.beneficiary || '–')}</td><td class="num">${fmt(t.volume)}</td></tr>`).join('')}
+        </tbody></table>${tx.length ? '' : `<p class="empty">${tq ? 'No transactions match this search.' : 'No transactions in the imported data.'}</p>`}</div></section>`;
   }
 
   function viewIssueForm(D) {
@@ -729,6 +736,7 @@
     const t = e.target;
     if (t.dataset.f) { S.fv[t.dataset.f] = t.value; if (S.err) S.err = ''; return; }
     if (t.dataset.filter === 'q') { S.f.q = t.value; S.page = 1; clearTimeout(filterTimer); filterTimer = setTimeout(render, 200); }
+    if (t.dataset.filter === 'tq') { S.f.tq = t.value; clearTimeout(filterTimer); filterTimer = setTimeout(render, 200); }
   });
   document.addEventListener('change', e => {
     const t = e.target;
@@ -741,7 +749,7 @@
       return;
     }
     if (t.dataset.f) { S.fv[t.dataset.f] = t.value; return; }
-    if (t.dataset.filter && t.dataset.filter !== 'q') { S.f[t.dataset.filter] = t.value; S.page = 1; render(); }
+    if (t.dataset.filter && t.dataset.filter !== 'q' && t.dataset.filter !== 'tq') { S.f[t.dataset.filter] = t.value; S.page = 1; render(); }
   });
 
   // ---------- start ----------
