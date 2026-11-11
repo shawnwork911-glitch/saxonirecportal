@@ -250,7 +250,7 @@
       try { res = JSON.parse(r.f.Result || '{}'); } catch (e) { res = {}; }
       const summary = kind === 'issue'
         ? { deviceName: res.deviceName || (devs[p.deviceCode] || {}).name || p.deviceCode, startDate: p.startDate, endDate: p.endDate, volume: Number(p.volume), recipientAccount: p.recipientAccount }
-        : { type: raw === 'transfer' ? 'Transfer' : 'Redemption', party: res.beneficiaryName || (bens[p.beneficiaryUid] || {}).name || res.destinationAccount || p.destinationAccount || '', volume: Number(p.volume), itemUids: p.itemUids || [] };
+        : { type: raw === 'transfer' ? 'Transfer' : 'Redemption', party: res.beneficiaryName || (bens[p.beneficiaryUid] || {}).name || res.destinationAccount || p.destinationAccount || '', volume: Number(p.volume), itemUids: p.itemUids || (Array.isArray(p.allocations) ? p.allocations.map(a => a.itemUid) : []) };
       return { id: r.id, kind, ref: refOf(kind, r.id), status: r.f.RequestStatus || 'requested', summary, error: r.f.ErrorMessage || '', registryUid: r.f.RegistryUid || null, createdBy: r.createdBy, createdAt: r.createdAt };
     }).filter(r => r.status !== 'deleted' && r.status !== 'done').sort((a, b) => b.id - a.id);
   }
@@ -414,7 +414,7 @@
         ${S.data.hasRequests ? `<button class="btn primary" ${attr({ a: 'form', f: 'res' })}>Request a redemption or transfer</button>` : ''}
         <button class="btn" data-a="clearsel">Clear selection</button></div></div>` : ''}
       ${S.form === 'earmark' ? viewEarmarkForm(D, selAvail) : ''}
-      ${S.form === 'res' ? viewResForm(D, selected, selAvail) : ''}
+      ${S.form === 'res' ? viewResForm(D, selected) : ''}
       <div class="row">
         <section class="card grow" id="inv-card"><div class="card-h"><h2>Certificate blocks</h2><span class="muted small">${rows.length} shown, ${fmt(sum(rows, i => i.volume))} MWh</span>
             ${D.canEdit && pickable.length ? (allPicked
@@ -446,23 +446,46 @@
     return `<p class="note ${ok.length ? '' : 'warn'}">${head} ${body}</p>`;
   }
 
-  function viewResForm(D, selected, selAvail) {
+  // One request, one registry Draft. Each selected block gets its own volume line (full available
+  // volume to start with); beneficiary, purpose and consumption period are entered once for all.
+  const volNum = v => Number(String(v == null ? '' : v).replace(/,/g, '').trim());
+  function allocLines(D) {
+    const al = S.fv.alloc || {};
+    return [...S.sel].map(u => D.byUid[u]).filter(Boolean).map(i => ({ item: i, on: !al[i.uid] || al[i.uid].on !== false, vol: al[i.uid] ? al[i.uid].vol : String(i.available) }));
+  }
+  function allocTotal(lines) { return sum(lines.filter(l => l.on), l => (volNum(l.vol) > 0 ? volNum(l.vol) : 0)); }
+
+  function viewResForm(D, selected) {
     const fv = S.fv, red = fv.type !== 'Transfer';
-    return `<section class="card accent form"><div><h2>Request a draft from ${selected.length} certificate block${selected.length === 1 ? '' : 's'}</h2>
-      <p class="muted small mt4">Your request is queued. The next time the export runs on GitHub, it checks the request and creates a <b>Draft</b> in the registry. Nothing moves or is redeemed until your approver submits and approves it in the registry.</p></div>
+    const lines = allocLines(D), on = lines.filter(l => l.on), allOn = on.length === lines.length;
+    return `<section class="card accent form"><div><h2>Request a ${red ? 'redemption' : 'transfer'} draft from ${selected.length} certificate block${selected.length === 1 ? '' : 's'}</h2>
+      <p class="muted small mt4">Your request is queued. The next time the export runs on GitHub, it checks the request and creates one <b>Draft</b> in the registry with these blocks. Nothing moves or is redeemed until your approver submits and approves it in the registry.</p></div>
       <div class="fields">
         <div><label class="lbl" for="rs-type">Type</label><select id="rs-type" class="fld" data-f="type" data-rerender="1">${opt('Redemption', 'Redemption', fv.type)}${opt('Transfer', 'Transfer', fv.type)}</select></div>
-        <div><label class="lbl" for="rs-vol">Volume (MWh)</label><input id="rs-vol" class="fld" inputmode="decimal" data-f="volume" value="${esc(fv.volume)}"><span class="muted small">Up to ${fmt(selAvail)} MWh</span></div>
         ${red ? '' : `<div class="wide"><label class="lbl" for="rs-dest">Receiving account code</label><input id="rs-dest" class="fld mono" data-f="destinationAccount" value="${esc(fv.destinationAccount)}" placeholder="Account code from the buyer"></div>`}
       </div>
       ${red ? `<div class="fields">
         <div class="wide"><label class="lbl" for="rs-ben">Beneficiary</label><select id="rs-ben" class="fld" data-f="beneficiaryUid">${opt('', 'Choose a beneficiary', fv.beneficiaryUid)}${D.beneficiaries.map(b => opt(b.uid, b.location ? `${b.name} (${b.location.slice(0, 40)})` : b.name, fv.beneficiaryUid)).join('')}</select></div>
         <div class="wide"><label class="lbl" for="rs-pur">Reporting purpose</label><input id="rs-pur" class="fld" data-f="purpose" value="${esc(fv.purpose)}"></div>
         <div><label class="lbl" for="rs-start">Consumption from</label><input id="rs-start" class="fld" type="date" data-f="periodStart" value="${esc(fv.periodStart)}"></div>
-        <div><label class="lbl" for="rs-end">Consumption to</label><input id="rs-end" class="fld" type="date" data-f="periodEnd" value="${esc(fv.periodEnd)}"></div></div>` : ''}
+        <div><label class="lbl" for="rs-end">Consumption to</label><input id="rs-end" class="fld" type="date" data-f="periodEnd" value="${esc(fv.periodEnd)}"></div></div>
+        <p class="muted small mt0">These apply to every block in this request.</p>` : ''}
+      <div class="alloc">
+        <div class="alloc-h"><b>Volume per block</b><span class="small"><span id="rs-total">${fmt(allocTotal(lines))}</span> MWh from <span id="rs-count">${on.length}</span> of ${lines.length} blocks</span>
+          <button class="btn sm" data-a="allocfull">Use full available for all</button></div>
+        <div class="alloc-scroll"><table><thead><tr>
+          <th><input type="checkbox" id="rs-all" data-a="allocall" ${allOn ? 'checked' : ''} aria-label="Select all blocks in this request"></th>
+          <th>Certificate</th><th>Device</th><th>Period</th><th class="num">Available</th><th class="num">Volume (MWh)</th></tr></thead><tbody>
+          ${lines.map(l => `<tr class="${l.on ? '' : 'off'}">
+            <td><input type="checkbox" ${attr({ a: 'alloctoggle', id: l.item.uid })} ${l.on ? 'checked' : ''} aria-label="Include ${esc(short(l.item.uid))}"></td>
+            <td class="mono">${esc(short(l.item.uid))}</td><td>${esc(l.item.deviceName || '–')}</td><td>${period(l.item.periodStart, l.item.periodEnd)}</td>
+            <td class="num">${fmt(l.item.available)}</td>
+            <td class="num"><input class="fld vol" id="rs-v-${esc(l.item.uid)}" inputmode="decimal" ${attr({ alloc: l.item.uid })} value="${esc(l.vol)}" ${l.on ? '' : 'disabled'} aria-label="Volume for ${esc(short(l.item.uid))}"></td></tr>`).join('')}
+        </tbody></table></div></div>
       ${S.err ? `<p class="error" role="alert">${esc(S.err)}</p>` : ''}
       <div class="actions"><button class="btn primary" data-a="createres">Queue the request</button><button class="btn" data-a="cancel">Cancel</button></div></section>`;
   }
+
 
   function viewEarmarkForm(D, selAvail) {
     const names = [...new Set(D.beneficiaries.map(b => b.name))];
@@ -690,8 +713,8 @@
     if (a === 'cancel') { S.form = null; S.err = ''; render(); return; }
     if (a === 'form') {
       S.form = el.dataset.f; S.err = ''; S.detail = null;
-      const y = new Date().getFullYear(), avail = sum([...S.sel].map(u => derive().byUid[u]).filter(Boolean), i => i.available);
-      S.fv = el.dataset.f === 'res' ? { type: 'Redemption', volume: String(avail), beneficiaryUid: '', purpose: `Scope 2 reporting ${y}`, periodStart: `${y}-01-01`, periodEnd: '', destinationAccount: '' } : { client: '', note: '' };
+      const y = new Date().getFullYear();
+      S.fv = el.dataset.f === 'res' ? { type: 'Redemption', alloc: {}, beneficiaryUid: '', purpose: `Scope 2 reporting ${y}`, periodStart: `${y}-01-01`, periodEnd: '', destinationAccount: '' } : { client: '', note: '' };
       render(); return;
     }
     if (a === 'issueform') {
@@ -701,26 +724,35 @@
       render(); return;
     }
     if (a === 'createres') run(async () => {
-      const fv = S.fv, D = derive(), vol = Number(String(fv.volume).replace(/,/g, ''));
-      const picked = [...S.sel].map(u => D.byUid[u]).filter(Boolean), avail = sum(picked, i => i.available);
-      const busy = picked.find(i => i.queuedIn);
-      if (!picked.length) { S.err = 'Select at least one certificate block first.'; render(); return; }
-      if (busy) { S.err = `${short(busy.uid)} is already in the queued request ${busy.queuedIn.ref}. Wait for it, or cancel it first.`; render(); return; }
-      if (!(vol > 0)) { S.err = 'Enter a volume above zero.'; render(); return; }
-      if (vol > avail) { S.err = `Only ${fmt(avail)} MWh is available in the selected blocks.`; render(); return; }
-      if (new Set(picked.map(i => i.accountCode)).size > 1) { S.err = 'All selected certificates must be in the same account.'; render(); return; }
+      const fv = S.fv, D = derive();
+      const lines = allocLines(D).filter(l => l.on);
+      if (!lines.length) { S.err = 'Tick at least one certificate block for this request.'; render(); return; }
+      const busy = lines.find(l => l.item.queuedIn);
+      if (busy) { S.err = `${short(busy.item.uid)} is already in the queued request ${busy.item.queuedIn.ref}. Wait for it, or cancel it first.`; render(); return; }
+      for (const l of lines) {
+        const v = volNum(l.vol);
+        if (!(v > 0)) { S.err = `Enter a volume above zero for ${short(l.item.uid)} (${l.item.deviceName || 'no device name'}), or untick it.`; render(); return; }
+        if (v > l.item.available + 1e-9) { S.err = `${short(l.item.uid)} (${l.item.deviceName || 'no device name'}) only has ${fmt(l.item.available)} MWh available.`; render(); return; }
+      }
+      if (new Set(lines.map(l => l.item.accountCode)).size > 1) { S.err = 'All blocks in one request must be in the same account.'; render(); return; }
       if (fv.type === 'Redemption' && !fv.beneficiaryUid) { S.err = 'Choose a beneficiary.'; render(); return; }
       if (fv.type === 'Redemption' && (!fv.periodStart || !fv.periodEnd || fv.periodEnd < fv.periodStart)) { S.err = 'Enter a consumption period that ends after it starts.'; render(); return; }
       if (fv.type === 'Redemption' && !String(fv.purpose || '').trim()) { S.err = 'Enter the reporting purpose.'; render(); return; }
-      if (fv.type === 'Transfer' && !String(fv.destinationAccount).trim()) { S.err = 'Enter the receiving account code.'; render(); return; }
-      const payload = fv.type === 'Transfer' ? { itemUids: [...S.sel], volume: vol, destinationAccount: String(fv.destinationAccount).trim() }
-        : { itemUids: [...S.sel], volume: vol, beneficiaryUid: fv.beneficiaryUid, purpose: fv.purpose, periodStart: fv.periodStart, periodEnd: fv.periodEnd };
-      const created = await addItem('requests', { Title: 'New request', Kind: fv.type.toLowerCase(), RequestStatus: 'requested', Payload: JSON.stringify(payload) });
+      if (fv.type === 'Transfer' && !String(fv.destinationAccount || '').trim()) { S.err = 'Enter the receiving account code.'; render(); return; }
+      const allocations = lines.map(l => ({ itemUid: l.item.uid, volume: volNum(l.vol) }));
+      const itemUids = allocations.map(x => x.itemUid), vol = Number(sum(allocations, x => x.volume).toFixed(6));
+      const payload = fv.type === 'Transfer' ? { allocations, volume: vol, destinationAccount: String(fv.destinationAccount).trim() }
+        : { allocations, volume: vol, beneficiaryUid: fv.beneficiaryUid, purpose: fv.purpose, periodStart: fv.periodStart, periodEnd: fv.periodEnd };
+      const text = JSON.stringify(payload);
+      // SharePoint's multi-line text column holds about 63,000 characters (roughly 900 blocks).
+      if (text.length > 60000) { S.err = `That is too many blocks for one request (${itemUids.length}). Untick some and queue them as a second request.`; render(); return; }
+      const created = await addItem('requests', { Title: 'New request', Kind: fv.type.toLowerCase(), RequestStatus: 'requested', Payload: text });
       const ref = refOf('reservation', created.id);
-      await log(`Requested a ${fv.type.toLowerCase()} draft, ${fmt(vol)} MWh`, ref, { itemUids: [...S.sel] });
+      await log(`Requested a ${fv.type.toLowerCase()} draft, ${fmt(vol)} MWh from ${itemUids.length} block${itemUids.length === 1 ? '' : 's'}`, ref, { itemUids });
       S.sel.clear(); S.form = null; S.screen = 'reservations';
       await refreshAll(`${ref} queued. The Draft is created in the registry the next time the export runs on GitHub.`);
     });
+    if (a === 'allocfull') { const D = derive(); S.fv.alloc = S.fv.alloc || {}; allocLines(D).forEach(l => { S.fv.alloc[l.item.uid] = { on: l.on, vol: String(l.item.available) }; }); S.err = ''; render(); return; }
     if (a === 'createissue') run(async () => {
       const fv = S.fv, vol = Number(String(fv.volume).replace(/,/g, ''));
       if (!fv.startDate || !fv.endDate || fv.endDate < fv.startDate) { S.err = 'Enter a production period that ends after it starts.'; render(); return; }
@@ -789,11 +821,27 @@
   document.addEventListener('input', e => {
     const t = e.target;
     if (t.dataset.f) { S.fv[t.dataset.f] = t.value; if (S.err) S.err = ''; return; }
+    if (t.dataset.alloc) {
+      S.fv.alloc = S.fv.alloc || {};
+      const cur = S.fv.alloc[t.dataset.alloc];
+      S.fv.alloc[t.dataset.alloc] = { on: cur ? cur.on : true, vol: t.value };
+      const tot = document.getElementById('rs-total');
+      if (tot) tot.textContent = fmt(allocTotal(allocLines(derive())));
+      return;
+    }
     if (t.dataset.filter === 'q') { S.f.q = t.value; S.page = 1; clearTimeout(filterTimer); filterTimer = setTimeout(render, 200); }
     if (t.dataset.filter === 'tq') { S.f.tq = t.value; clearTimeout(filterTimer); filterTimer = setTimeout(render, 200); }
   });
   document.addEventListener('change', e => {
     const t = e.target;
+    if (t.dataset.a === 'allocall' || t.dataset.a === 'alloctoggle') {
+      const D = derive(); S.fv.alloc = S.fv.alloc || {};
+      allocLines(D).forEach(l => {
+        if (t.dataset.a === 'alloctoggle' && l.item.uid !== t.dataset.id) return;
+        S.fv.alloc[l.item.uid] = { on: t.checked, vol: l.vol };
+      });
+      render(); return;
+    }
     if (t.dataset.a === 'toggle') { if (t.checked) S.sel.add(t.dataset.id); else S.sel.delete(t.dataset.id); render(); return; }
     if (t.dataset.a === 'pickfile') {
       const file = t.files && t.files[0];
@@ -802,7 +850,7 @@
       prepareImport(file).then(p => { S.pending = p; render(); }).catch(err => { S.err = err.message; render(); });
       return;
     }
-    if (t.dataset.f) { S.fv[t.dataset.f] = t.value; return; }
+    if (t.dataset.f) { S.fv[t.dataset.f] = t.value; if (t.dataset.rerender) render(); return; }
     if (t.dataset.filter && t.dataset.filter !== 'q' && t.dataset.filter !== 'tq') { S.f[t.dataset.filter] = t.value; S.page = 1; render(); }
   });
 
