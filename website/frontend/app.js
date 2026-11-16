@@ -21,13 +21,18 @@
   const REQ_LABEL = { requested: 'Queued for the registry', processing: 'Being created', draft: 'Draft in the registry', submitted: 'Submitted in the registry', completed: 'Completed',
     failed: 'Failed', 'delete-requested': 'Deletion queued', deleted: 'Deleted', withdrawn: 'Withdrawn', issued: 'Issued', rejected: 'Rejected' };
   const OPEN_REQ = ['requested', 'processing', 'draft', 'submitted', 'delete-requested'];
+  // Finished requests: hidden from the request tables unless "Show finished" is on. They stay in the Activity log.
+  const DONE_REQ = ['completed', 'issued', 'withdrawn', 'deleted'];
+  // Search boxes that filter as you type.
+  const TYPED_FILTERS = ['q', 'tq', 'iq', 'aq'];
+  const hit = (text, kw) => !kw || String(text).toLowerCase().includes(kw);
   const refOf = (kind, id) => `${kind === 'issue' ? 'IR' : 'RSV'}-${1000 + Number(id)}`;
   const TITLES = { dashboard: 'Overview', inventory: 'Inventory', reservations: 'Redemptions and transfers', issuance: 'Issuance', audit: 'Activity log', import: 'Import registry data' };
   const HOME = location.origin + location.pathname.replace(/index\.html$/, '');
 
   const PAGE_SIZE = 50;
   const S = { me: null, data: null, audit: [], screen: 'dashboard', sel: new Set(), detail: null, form: null, err: '', toast: null,
-    f: { q: '', device: '', period: '', status: '', tq: '' }, page: 1, remarks: [], remarksKey: '', fv: {}, busy: false, pending: null };
+    f: { q: '', device: '', period: '', status: '', tq: '', iq: '', aq: '' }, showDone: false, page: 1, remarks: [], remarksKey: '', fv: {}, busy: false, pending: null };
   const $app = document.getElementById('app');
   let msal = null, ids = null;
 
@@ -248,9 +253,12 @@
       let p = {}, res = {};
       try { p = JSON.parse(r.f.Payload || '{}'); } catch (e) { p = {}; }
       try { res = JSON.parse(r.f.Result || '{}'); } catch (e) { res = {}; }
+      // The volume as requested; if the request does not carry one, what the worker recorded, or the blocks added up.
+      const pos = v => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+      const volume = pos(p.volume) || pos(res.volume) || (Array.isArray(p.allocations) ? Number(sum(p.allocations, a => pos(a && a.volume)).toFixed(6)) : 0);
       const summary = kind === 'issue'
-        ? { deviceName: res.deviceName || (devs[p.deviceCode] || {}).name || p.deviceCode, startDate: p.startDate, endDate: p.endDate, volume: Number(p.volume), recipientAccount: p.recipientAccount }
-        : { type: raw === 'transfer' ? 'Transfer' : 'Redemption', party: res.beneficiaryName || (bens[p.beneficiaryUid] || {}).name || res.destinationAccount || p.destinationAccount || '', volume: Number(p.volume), itemUids: p.itemUids || (Array.isArray(p.allocations) ? p.allocations.map(a => a.itemUid) : []) };
+        ? { deviceName: res.deviceName || (devs[p.deviceCode] || {}).name || p.deviceCode, startDate: p.startDate, endDate: p.endDate, volume, recipientAccount: p.recipientAccount }
+        : { type: raw === 'transfer' ? 'Transfer' : 'Redemption', party: res.beneficiaryName || (bens[p.beneficiaryUid] || {}).name || res.destinationAccount || p.destinationAccount || '', volume, itemUids: p.itemUids || (Array.isArray(p.allocations) ? p.allocations.map(a => a.itemUid) : []) };
       return { id: r.id, kind, ref: refOf(kind, r.id), status: r.f.RequestStatus || 'requested', summary, error: r.f.ErrorMessage || '', registryUid: r.f.RegistryUid || null, createdBy: r.createdBy, createdAt: r.createdAt };
     }).filter(r => r.status !== 'deleted' && r.status !== 'done').sort((a, b) => b.id - a.id);
   }
@@ -526,18 +534,23 @@
     return '';
   }
 
-  function viewRequestsTable(D, list, title) {
+  function viewRequestsTable(D, list, title, kw) {
     if (!S.data.hasRequests) return `<p class="note">Drafts can't be requested here yet: the SharePoint list <b>IREC Requests</b> hasn't been created. See the setup guide.</p>`;
-    return `<section class="card"><div class="card-h"><h2>${title}</h2><span class="muted small">${list.length}</span></div>
-      <p class="note pad">Requests become Drafts in the registry when the export next runs on GitHub. Approval stays in the registry.</p>
-      <div class="tablewrap"><table><thead><tr><th>Reference</th><th>${list[0] && list[0].kind === 'issue' ? 'Device' : 'Type'}</th><th>${list[0] && list[0].kind === 'issue' ? 'Period' : 'Beneficiary or receiving account'}</th><th class="num">Volume</th><th>Status</th><th>Requested by</th><th>Requested</th><th></th></tr></thead><tbody>
-      ${list.map(r => `<tr><td class="mono">${esc(r.ref)}</td>
+    const issue = list[0] && list[0].kind === 'issue';
+    const done = list.filter(r => DONE_REQ.includes(r.status)).length;
+    const open = S.showDone ? list : list.filter(r => !DONE_REQ.includes(r.status));
+    const shown = kw ? open.filter(r => hit(`${r.ref} ${r.kind === 'issue' ? r.summary.deviceName : `${r.summary.type} ${r.summary.party}`} ${REQ_LABEL[r.status] || r.status} ${r.createdBy.name} ${dDate(r.createdAt)}`, kw)) : open;
+    const empty = kw && open.length ? 'No requests match this search.' : list.length ? 'No open requests.' : 'No requests yet.';
+    return `<section class="card"><div class="card-h"><h2>${title}</h2><span class="muted small">${shown.length}${done ? ` <button class="linkbtn" data-a="toggledone">${S.showDone ? 'Hide finished' : `Show finished (${done})`}</button>` : ''}</span></div>
+      <p class="note pad">Requests become Drafts in the registry when the export next runs on GitHub. Approval stays in the registry. Finished requests are hidden here and stay in the Activity log.</p>
+      <div class="tablewrap"><table><thead><tr><th>Reference</th><th>${issue ? 'Device' : 'Type'}</th><th>${issue ? 'Period' : 'Beneficiary or receiving account'}</th><th class="num">Volume</th><th>Status</th><th>Requested by</th><th>Requested</th><th></th></tr></thead><tbody>
+      ${shown.map(r => `<tr><td class="mono">${esc(r.ref)}</td>
         <td>${r.kind === 'issue' ? esc(r.summary.deviceName) : esc(r.summary.type)}</td>
         <td class="wrap">${r.kind === 'issue' ? period(r.summary.startDate, r.summary.endDate) : esc(r.summary.party || '–')}</td>
         <td class="num">${fmt(r.summary.volume)}</td>
         <td class="wrap">${reqPill(r)}${r.error ? `<div class="small ${r.status === 'failed' ? 'error' : 'muted'}">${esc(r.error)}</div>` : ''}</td>
         <td>${esc(r.createdBy.name)}</td><td>${dDate(r.createdAt)}</td><td>${requestActions(D, r)}</td></tr>`).join('')}
-      </tbody></table>${list.length ? '' : '<p class="empty">No requests yet.</p>'}</div></section>`;
+      </tbody></table>${shown.length ? '' : `<p class="empty">${empty}</p>`}</div></section>`;
   }
 
   function viewReservations(D) {
@@ -578,27 +591,40 @@
   }
 
   function viewIssuance(D) {
+    const kw = S.f.iq.trim().toLowerCase();
     const devices = S.data.devices.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
     const reg = S.data.issues.slice().sort((a, b) => String(b.periodEnd).localeCompare(String(a.periodEnd)));
     const lastIssued = {};
     reg.forEach(i => { if (/approved|issued/i.test(i.status) && !lastIssued[i.deviceCode]) lastIssued[i.deviceCode] = period(i.periodStart, i.periodEnd); });
-    return `${S.form === 'issue' ? viewIssueForm(D) : ''}<div class="devices">${devices.map(d => `<div class="card card-b device">
+    // The search covers the devices, every issue request in the imported data, and the requests from the portal.
+    const devHits = devices.filter(d => hit(`${d.name} ${d.code} ${d.fuel} ${d.status}`, kw));
+    const regHits = reg.filter(i => hit(`${i.deviceName} ${i.deviceCode || ''} ${i.status} ${period(i.periodStart, i.periodEnd)} ${i.periodStart || ''} ${i.periodEnd || ''}`, kw));
+    const regShown = regHits.slice(0, 200);
+    const regNote = kw ? `${regHits.length} match${regHits.length === 1 ? '' : 'es'}${regHits.length > 200 ? ', showing the latest 200' : ''}` : (reg.length > 200 ? 'Latest 200' : `${reg.length}`);
+    return `${S.form === 'issue' ? viewIssueForm(D) : ''}
+      <section class="card"><div class="filters"><div class="wide"><label class="lbl" for="f-iq">Search issuance</label><input id="f-iq" class="fld" type="search" placeholder="Device name or code, fuel, status, period or reference" value="${esc(S.f.iq)}" data-filter="iq"></div></div></section>
+      <div class="devices">${devHits.map(d => `<div class="card card-b device">
         <div class="kv"><span class="device-name"><b>${esc(d.name)}</b><span class="muted small">${esc(d.fuel)}${d.capacity ? ', ' + fmt(d.capacity) + ' MW' : ''}, <span class="mono">${esc(d.code)}</span></span></span><span>${regPill(d.status)}</span></div>
         <span class="small">Last issued: ${lastIssued[d.code] || 'None yet'}</span>
-        ${D.canEdit && S.data.hasRequests && /approved/i.test(d.status) ? `<div><button class="btn sm" ${attr({ a: 'issueform', code: d.code })}>Request an issue</button></div>` : ''}</div>`).join('') || '<p class="muted">No devices in the imported data.</p>'}</div>
-      <section class="card"><div class="card-h"><h2>Issue requests in the registry</h2></div><div class="tablewrap"><table>
+        ${D.canEdit && S.data.hasRequests && /approved/i.test(d.status) ? `<div><button class="btn sm" ${attr({ a: 'issueform', code: d.code })}>Request an issue</button></div>` : ''}</div>`).join('') || `<p class="muted">${kw && devices.length ? 'No devices match this search.' : 'No devices in the imported data.'}</p>`}</div>
+      <section class="card"><div class="card-h"><h2>Issue requests in the registry</h2><span class="muted small">${regNote}</span></div><div class="tablewrap"><table>
         <thead><tr><th>Device</th><th>Period</th><th class="num">Production</th><th class="num">Issued</th><th>Status</th></tr></thead><tbody>
-        ${reg.slice(0, 200).map(i => `<tr><td>${esc(i.deviceName)}</td><td>${period(i.periodStart, i.periodEnd)}</td><td class="num">${fmt(i.productionVolume)}</td><td class="num">${fmt(i.issuedVolume)}</td><td>${regPill(i.status)}</td></tr>`).join('')}
-        </tbody></table>${reg.length ? '' : '<p class="empty">No issue requests in the imported data.</p>'}</div></section>
-      ${viewRequestsTable(D, S.data.requests.filter(r => r.kind === 'issue'), 'Issue requests from the portal')}`;
+        ${regShown.map(i => `<tr><td>${esc(i.deviceName)}</td><td>${period(i.periodStart, i.periodEnd)}</td><td class="num">${fmt(i.productionVolume)}</td><td class="num">${fmt(i.issuedVolume)}</td><td>${regPill(i.status)}</td></tr>`).join('')}
+        </tbody></table>${regShown.length ? '' : `<p class="empty">${kw && reg.length ? 'No issue requests match this search.' : 'No issue requests in the imported data.'}</p>`}</div></section>
+      ${viewRequestsTable(D, S.data.requests.filter(r => r.kind === 'issue'), 'Issue requests from the portal', kw)}`;
   }
 
   function viewAudit() {
+    const kw = S.f.aq.trim().toLowerCase();
+    const rows = S.audit.filter(e => hit(`${dTime(e.at)} ${e.name} ${e.action} ${e.ref || ''}`, kw));
+    const note = kw ? `${rows.length} match${rows.length === 1 ? '' : 'es'}` : `${rows.length}`;
     return `<section class="card"><div class="card-h stack"><h2>Who did what in the portal</h2>
       <span class="muted small">Each entry's name comes from SharePoint, which records who added it. Entries cannot be added under someone else's name.</span></div>
+      <div class="filters"><div class="wide"><label class="lbl" for="f-aq">Search the activity log</label><input id="f-aq" class="fld" type="search" placeholder="Name, action, reference or date" value="${esc(S.f.aq)}" data-filter="aq"></div>
+        <div><span class="muted small">${note}${S.audit.length >= 300 ? '. The log shows, and searches, the latest 300 entries.' : ''}</span></div></div>
       <div class="tablewrap"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Reference</th></tr></thead><tbody>
-      ${S.audit.map(e => `<tr><td>${esc(dTime(e.at))}</td><td><b>${esc(e.name)}</b></td><td class="wrap">${esc(e.action)}</td><td class="mono">${esc(e.ref || '–')}</td></tr>`).join('')}
-      </tbody></table>${S.audit.length ? '' : '<p class="empty">No activity yet.</p>'}</div></section>`;
+      ${rows.map(e => `<tr><td>${esc(dTime(e.at))}</td><td><b>${esc(e.name)}</b></td><td class="wrap">${esc(e.action)}</td><td class="mono">${esc(e.ref || '–')}</td></tr>`).join('')}
+      </tbody></table>${rows.length ? '' : `<p class="empty">${kw && S.audit.length ? 'No entries match this search.' : 'No activity yet.'}</p>`}</div></section>`;
   }
 
   function viewImport() {
@@ -693,6 +719,7 @@
     if (a === 'reload') { if (S.data) run(() => refreshAll('Reloaded.')); else location.reload(); return; }
     if (a === 'toggle' || a === 'pickfile') return;
     if (!S.data) return;
+    if (a === 'toggledone') { S.showDone = !S.showDone; render(); return; }
     if (a === 'go') { S.screen = el.dataset.s; S.detail = null; S.form = null; S.err = ''; S.pending = null; render(); window.scrollTo(0, 0); return; }
     if (a === 'open') { S.screen = 'inventory'; S.detail = { kind: 'item', id: el.dataset.id }; S.form = null; S.fv.remark = ''; render(); loadRemarks(el.dataset.id); return; }
     if (a === 'page') {
@@ -829,8 +856,11 @@
       if (tot) tot.textContent = fmt(allocTotal(allocLines(derive())));
       return;
     }
-    if (t.dataset.filter === 'q') { S.f.q = t.value; S.page = 1; clearTimeout(filterTimer); filterTimer = setTimeout(render, 200); }
-    if (t.dataset.filter === 'tq') { S.f.tq = t.value; clearTimeout(filterTimer); filterTimer = setTimeout(render, 200); }
+    if (TYPED_FILTERS.includes(t.dataset.filter)) {
+      S.f[t.dataset.filter] = t.value;
+      if (t.dataset.filter === 'q') S.page = 1;
+      clearTimeout(filterTimer); filterTimer = setTimeout(render, 200);
+    }
   });
   document.addEventListener('change', e => {
     const t = e.target;
@@ -851,7 +881,7 @@
       return;
     }
     if (t.dataset.f) { S.fv[t.dataset.f] = t.value; if (t.dataset.rerender) render(); return; }
-    if (t.dataset.filter && t.dataset.filter !== 'q' && t.dataset.filter !== 'tq') { S.f[t.dataset.filter] = t.value; S.page = 1; render(); }
+    if (t.dataset.filter && !TYPED_FILTERS.includes(t.dataset.filter)) { S.f[t.dataset.filter] = t.value; S.page = 1; render(); }
   });
 
   // ---------- start ----------
