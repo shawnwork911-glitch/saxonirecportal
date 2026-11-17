@@ -665,6 +665,16 @@
     return like.length === 1 ? { id: like[0], e: ents[like[0]] } : { like: like.slice(0, 8) };
   }
 
+  // CSV of the result on screen. Opens in Excel; cells that could be read as a formula are made safe.
+  function codCsv(id, e) {
+    const cell = v => { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return `"${t.replace(/"/g, '""')}"`; };
+    const found = e.kind === 'reservation' ? 'Request in the registry' : (e.type || 'transaction');
+    const overall = !e.complete ? 'CANNOT CONFIRM' : e.allOk ? 'PASS' : 'FAIL';
+    const head = ['ID', 'Found as', 'Overall result', 'Certificate (item) ID', 'Result', 'Device code', 'Device name', 'Technology', 'COD', 'Earliest COD allowed', 'Age (years)', 'Production from', 'Production to', 'MWh', 'Reason', 'COD data read (UTC)'];
+    const rows = e.lines.map(l => [id, found, overall, l.item, l.ok ? 'PASS' : 'FAIL', l.device, l.deviceName, l.technology, l.cod, l.minCod, l.ageYears, l.periodStart, l.periodEnd, l.volume, l.reason, S.cod.syncedAt]);
+    return '\uFEFF' + [head, ...rows].map(r => r.map(cell).join(',')).join('\r\n') + '\r\n';
+  }
+
   function codResult(id, e) {
     const bad = e.lines.filter(l => !l.ok).length;
     const what = e.kind === 'reservation' ? `Request in the registry${e.status ? ` (${e.status})` : ''}` : (e.type === 'redemption' ? 'Completed redemption' : e.type === 'transfer' ? 'Completed transfer' : 'Transaction');
@@ -673,7 +683,7 @@
       : ['p-rejected', `FAIL: ${bad} of ${e.lines.length} certificate${e.lines.length === 1 ? '' : 's'} do not meet the requirement`];
     return `<div class="panel-sec"><div class="kv"><span>ID</span><span class="mono">${esc(id)}</span></div>
         <div class="kv"><span>Found as</span><span>${esc(what)}${e.timestamp ? `, ${esc(dTime(e.timestamp))}` : ''}</span></div>
-        <div><span class="pill ${verdict[0]}">${esc(verdict[1])}</span></div>
+        <div class="actions"><span class="pill ${verdict[0]}">${esc(verdict[1])}</span><button class="btn sm" data-a="codcsv">Download CSV</button></div>
         ${e.complete ? '' : `<p class="note warn">The registry data lists ${e.expected} certificate${e.expected === 1 ? '' : 's'} for this ID but only ${e.lines.length} could be read, so it cannot be confirmed. Run the export again.</p>`}</div>
       <div class="tablewrap"><table><thead><tr><th>Result</th><th>Device</th><th>Technology</th><th>COD</th><th>Earliest COD allowed</th><th class="num">Age (years)</th><th>Production period</th><th class="num">MWh</th><th>Reason</th></tr></thead><tbody>
       ${e.lines.map(l => `<tr><td><span class="pill ${l.ok ? 'p-completed' : 'p-rejected'}">${l.ok ? 'PASS' : 'FAIL'}</span></td>
@@ -796,6 +806,16 @@
     if (a === 'reload') { if (S.data) run(() => refreshAll('Reloaded.')); else location.reload(); return; }
     if (a === 'toggle' || a === 'pickfile') return;
     if (!S.data) return;
+    if (a === 'codcsv') {
+      const r = S.cod && S.f.cq.trim() ? codFind(S.f.cq.trim()) : {};
+      if (!r.e) return;
+      const url = URL.createObjectURL(new Blob([codCsv(r.id, r.e)], { type: 'text/csv;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url; link.download = `cod-check-${r.id.replace(/[^A-Za-z0-9_-]/g, '')}.csv`;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      return;
+    }
     if (a === 'toggledone') { S.showDone = !S.showDone; render(); return; }
     if (a === 'go') { S.screen = el.dataset.s; S.detail = null; S.form = null; S.err = ''; S.pending = null; render(); window.scrollTo(0, 0); if (S.screen === 'cod' && !S.codState) loadCod(); return; }
     if (a === 'open') { S.screen = 'inventory'; S.detail = { kind: 'item', id: el.dataset.id }; S.form = null; S.fv.remark = ''; render(); loadRemarks(el.dataset.id); return; }
