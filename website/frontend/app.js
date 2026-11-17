@@ -631,14 +631,29 @@
   // Answers from cod-check.json, made by the daily export: no live registry call, nothing
   // secret in the browser. Rule: wind, solar and hydro only, and for generation from 2024 the
   // device must be less than 15 years old (commissioned on or after 1 January of vintage - 15).
-  async function loadCod() {
-    S.codState = 'loading'; render();
+  async function fetchCod() {
     try {
       const f = await readFile('cod-check.json');
       if (f && f.format === 'saxon-irec-cod-check' && f.version === 1 && f.entries) { S.cod = f; S.codState = 'ready'; }
       else { S.cod = null; S.codState = f ? 'bad' : 'missing'; }
     } catch (e) { S.cod = null; S.codState = 'error'; S.codErr = e.message; }
-    render();
+  }
+  async function loadCod() { S.codState = 'loading'; render(); await fetchCod(); render(); }
+
+  // Used by the redemption form: returns a message that blocks the request, or '' if every
+  // selected certificate meets the COD rule. If the COD data is missing or does not know a
+  // certificate, the request is blocked too: nothing is let through unchecked.
+  async function codBlock(lines) {
+    if (S.codState !== 'ready') await fetchCod();
+    if (S.codState !== 'ready') return 'This redemption cannot be requested because the COD check data is not available. Run the daily export on GitHub, click Reload, and try again.';
+    const certs = S.cod.items || {}, bad = [], unknown = [];
+    for (const l of lines) {
+      const c = certs[l.item.uid], name = `${l.item.deviceName || 'no device name'} (${short(l.item.uid)})`;
+      if (!c) unknown.push(name); else if (!c.ok) bad.push(`${name}: ${c.reason}`);
+    }
+    if (bad.length) return `Blocked by the COD check: ${bad.length} of ${lines.length} certificate block${lines.length === 1 ? '' : 's'} cannot be redeemed under the buyer's rule (wind, solar or hydro commissioned less than 15 years before the generation year). Untick them and try again. ${bad.slice(0, 4).join(' | ')}${bad.length > 4 ? ' | and more' : ''}`;
+    if (unknown.length) return `Blocked by the COD check: the COD of ${unknown.slice(0, 4).join(', ')}${unknown.length > 4 ? ' and more' : ''} cannot be confirmed yet (the COD data was read ${dTime(S.cod.syncedAt)}). Run the daily export on GitHub, click Reload, and try again.`;
+    return '';
   }
 
   function codFind(kw) {
@@ -828,6 +843,7 @@
       if (fv.type === 'Redemption' && (!fv.periodStart || !fv.periodEnd || fv.periodEnd < fv.periodStart)) { S.err = 'Enter a consumption period that ends after it starts.'; render(); return; }
       if (fv.type === 'Redemption' && !String(fv.purpose || '').trim()) { S.err = 'Enter the reporting purpose.'; render(); return; }
       if (fv.type === 'Transfer' && !String(fv.destinationAccount || '').trim()) { S.err = 'Enter the receiving account code.'; render(); return; }
+      if (fv.type === 'Redemption') { const block = await codBlock(lines); if (block) { S.err = block; render(); return; } }
       const allocations = lines.map(l => ({ itemUid: l.item.uid, volume: volNum(l.vol) }));
       const itemUids = allocations.map(x => x.itemUid), vol = Number(sum(allocations, x => x.volume).toFixed(6));
       const payload = fv.type === 'Transfer' ? { allocations, volume: vol, destinationAccount: String(fv.destinationAccount).trim() }
