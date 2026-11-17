@@ -668,10 +668,8 @@
   // CSV of the result on screen. Opens in Excel; cells that could be read as a formula are made safe.
   function codCsv(id, e) {
     const cell = v => { let t = v == null ? '' : String(v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return `"${t.replace(/"/g, '""')}"`; };
-    const found = e.kind === 'reservation' ? 'Request in the registry' : (e.type || 'transaction');
-    const overall = !e.complete ? 'CANNOT CONFIRM' : e.allOk ? 'PASS' : 'FAIL';
-    const head = ['ID', 'Found as', 'Overall result', 'Certificate (item) ID', 'Result', 'Device code', 'Device name', 'Technology', 'COD', 'Earliest COD allowed', 'Age (years)', 'Production from', 'Production to', 'MWh', 'Reason', 'COD data read (UTC)'];
-    const rows = e.lines.map(l => [id, found, overall, l.item, l.ok ? 'PASS' : 'FAIL', l.device, l.deviceName, l.technology, l.cod, l.minCod, l.ageYears, l.periodStart, l.periodEnd, l.volume, l.reason, S.cod.syncedAt]);
+    const head = ['Device code', 'Device name', 'Technology', 'COD'];
+    const rows = e.lines.map(l => [l.device, l.deviceName, l.technology, l.cod]);
     return '\uFEFF' + [head, ...rows].map(r => r.map(cell).join(',')).join('\r\n') + '\r\n';
   }
 
