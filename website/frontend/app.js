@@ -24,15 +24,15 @@
   // Finished requests: hidden from the request tables unless "Show finished" is on. They stay in the Activity log.
   const DONE_REQ = ['completed', 'issued', 'withdrawn', 'deleted'];
   // Search boxes that filter as you type.
-  const TYPED_FILTERS = ['q', 'tq', 'iq', 'aq'];
+  const TYPED_FILTERS = ['q', 'tq', 'iq', 'aq', 'cq'];
   const hit = (text, kw) => !kw || String(text).toLowerCase().includes(kw);
   const refOf = (kind, id) => `${kind === 'issue' ? 'IR' : 'RSV'}-${1000 + Number(id)}`;
-  const TITLES = { dashboard: 'Overview', inventory: 'Inventory', reservations: 'Redemptions and transfers', issuance: 'Issuance', audit: 'Activity log', import: 'Import registry data' };
+  const TITLES = { dashboard: 'Overview', inventory: 'Inventory', reservations: 'Redemptions and transfers', issuance: 'Issuance', audit: 'Activity log', cod: 'COD check', import: 'Import registry data' };
   const HOME = location.origin + location.pathname.replace(/index\.html$/, '');
 
   const PAGE_SIZE = 50;
   const S = { me: null, data: null, audit: [], screen: 'dashboard', sel: new Set(), detail: null, form: null, err: '', toast: null,
-    f: { q: '', device: '', period: '', status: '', tq: '', iq: '', aq: '' }, showDone: false, page: 1, remarks: [], remarksKey: '', fv: {}, busy: false, pending: null };
+    f: { q: '', device: '', period: '', status: '', tq: '', iq: '', aq: '', cq: '' }, cod: null, codState: '' , showDone: false, page: 1, remarks: [], remarksKey: '', fv: {}, busy: false, pending: null };
   const $app = document.getElementById('app');
   let msal = null, ids = null;
 
@@ -298,7 +298,7 @@
 
   // ---------- views ----------
   function viewNav(D) {
-    const navItems = [['dashboard', 'Overview'], ['inventory', 'Inventory'], ['reservations', 'Redemptions and transfers'], ['issuance', 'Issuance'], ['audit', 'Activity log']];
+    const navItems = [['dashboard', 'Overview'], ['inventory', 'Inventory'], ['reservations', 'Redemptions and transfers'], ['issuance', 'Issuance'], ['cod', 'COD check'], ['audit', 'Activity log']];
     if (D.canEdit) navItems.push(['import', 'Import registry data']);
     return `<nav class="nav" aria-label="Main">${navItems.map(([k, l]) => `<button ${attr({ a: 'go', s: k })} ${S.screen === k ? 'aria-current="page"' : ''}><span>${l}</span></button>`).join('')}</nav>`;
   }
@@ -627,6 +627,68 @@
       </tbody></table>${rows.length ? '' : `<p class="empty">${kw && S.audit.length ? 'No entries match this search.' : 'No activity yet.'}</p>`}</div></section>`;
   }
 
+  // ---------- COD check ----------
+  // Answers from cod-check.json, made by the daily export: no live registry call, nothing
+  // secret in the browser. Rule: wind, solar and hydro only, and for generation from 2024 the
+  // device must be less than 15 years old (commissioned on or after 1 January of vintage - 15).
+  async function loadCod() {
+    S.codState = 'loading'; render();
+    try {
+      const f = await readFile('cod-check.json');
+      if (f && f.format === 'saxon-irec-cod-check' && f.version === 1 && f.entries) { S.cod = f; S.codState = 'ready'; }
+      else { S.cod = null; S.codState = f ? 'bad' : 'missing'; }
+    } catch (e) { S.cod = null; S.codState = 'error'; S.codErr = e.message; }
+    render();
+  }
+
+  function codFind(kw) {
+    const ents = S.cod.entries, up = kw.toUpperCase();
+    if (ents[kw]) return { id: kw, e: ents[kw] };
+    const hitId = Object.keys(ents).find(k => k.toUpperCase() === up);
+    if (hitId) return { id: hitId, e: ents[hitId] };
+    const like = kw.length >= 6 ? Object.keys(ents).filter(k => k.toUpperCase().includes(up)) : [];
+    return like.length === 1 ? { id: like[0], e: ents[like[0]] } : { like: like.slice(0, 8) };
+  }
+
+  function codResult(id, e) {
+    const bad = e.lines.filter(l => !l.ok).length;
+    const what = e.kind === 'reservation' ? `Request in the registry${e.status ? ` (${e.status})` : ''}` : (e.type === 'redemption' ? 'Completed redemption' : e.type === 'transfer' ? 'Completed transfer' : 'Transaction');
+    const verdict = !e.complete ? ['p-draft', 'Cannot confirm']
+      : e.allOk ? ['p-completed', (e.lines.length === 1 ? 'PASS: the certificate meets the COD requirement' : `PASS: all ${e.lines.length} certificates meet the COD requirement`)]
+      : ['p-rejected', `FAIL: ${bad} of ${e.lines.length} certificate${e.lines.length === 1 ? '' : 's'} do not meet the requirement`];
+    return `<div class="panel-sec"><div class="kv"><span>ID</span><span class="mono">${esc(id)}</span></div>
+        <div class="kv"><span>Found as</span><span>${esc(what)}${e.timestamp ? `, ${esc(dTime(e.timestamp))}` : ''}</span></div>
+        <div><span class="pill ${verdict[0]}">${esc(verdict[1])}</span></div>
+        ${e.complete ? '' : `<p class="note warn">The registry data lists ${e.expected} certificate${e.expected === 1 ? '' : 's'} for this ID but only ${e.lines.length} could be read, so it cannot be confirmed. Run the export again.</p>`}</div>
+      <div class="tablewrap"><table><thead><tr><th>Result</th><th>Device</th><th>Technology</th><th>COD</th><th>Earliest COD allowed</th><th class="num">Age (years)</th><th>Production period</th><th class="num">MWh</th><th>Reason</th></tr></thead><tbody>
+      ${e.lines.map(l => `<tr><td><span class="pill ${l.ok ? 'p-completed' : 'p-rejected'}">${l.ok ? 'PASS' : 'FAIL'}</span></td>
+        <td><b>${esc(l.deviceName || l.device || '–')}</b><div class="muted small mono">${esc(l.device || '')}</div></td><td>${esc(l.technology || '–')}</td>
+        <td>${l.cod ? esc(dDate(l.cod)) : 'Not available'}</td><td>${l.minCod ? esc(dDate(l.minCod)) : '–'}</td>
+        <td class="num">${l.ageYears == null ? '–' : esc(l.ageYears)}</td><td>${esc(period(l.periodStart, l.periodEnd))}</td><td class="num">${esc(fmt(l.volume))}</td><td class="wrap">${esc(l.reason)}</td></tr>`).join('')}
+      </tbody></table></div>`;
+  }
+
+  function viewCod() {
+    const kw = S.f.cq.trim();
+    let body = '';
+    if (S.codState === 'loading' || !S.codState) body = '<p class="empty">Loading the COD data…</p>';
+    else if (S.codState === 'missing') body = '<p class="note warn pad">The COD data has not been uploaded yet. It is created by the next daily export on GitHub (or run the workflow now), then click Reload.</p>';
+    else if (S.codState === 'bad') body = '<p class="note err pad">The COD data file is not in the expected format. Run the export again.</p>';
+    else if (S.codState === 'error') body = `<p class="note err pad">${esc(S.codErr || 'The COD data could not be read.')}</p>`;
+    else if (!kw) body = '<p class="empty">Enter a transaction ID (completed transfer or redemption) or a request ID from the registry.</p>';
+    else {
+      const r = codFind(kw);
+      if (r.e) body = codResult(r.id, r.e);
+      else if (r.like && r.like.length) body = `<div class="panel-sec"><h3>Several IDs match. Enter more of the ID.</h3>${r.like.map(k => `<div class="mono">${esc(k)}</div>`).join('')}</div>`;
+      else body = `<p class="empty">No transfer, redemption or request with that ID in the COD data (read ${esc(dTime(S.cod.syncedAt))}). If it was created after that time, run the export and click Reload.</p>`;
+    }
+    return `<section class="card"><div class="card-h stack"><h2>COD check for redemption</h2>
+      <span class="muted small">Wind, solar, small hydro (under 25 MW) and large hydro (25 MW or more) are accepted; nuclear is not. For generation from 2024, the device must be commissioned on or after 1 January of the generation year minus 15 (generation in 2025: on or after 1 January 2010).</span></div>
+      <div class="filters"><div class="wide"><label class="lbl" for="f-cq">Transaction or request ID</label><input id="f-cq" class="fld" type="search" placeholder="Paste the ID" value="${esc(S.f.cq)}" data-filter="cq" autocomplete="off" spellcheck="false"></div>
+        <div><span class="muted small">${S.cod ? `COD data read ${esc(dTime(S.cod.syncedAt))}` : ''}</span></div></div>
+      ${body}</section>`;
+  }
+
   function viewImport() {
     const p = S.pending, cur = S.data;
     return `<section class="card card-b form">
@@ -658,7 +720,7 @@
     const caret = active && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
     const oldWrap = document.getElementById('inv-wrap');
     const hScroll = oldWrap ? oldWrap.scrollLeft : 0;
-    const screens = { dashboard: viewDashboard, inventory: viewInventory, reservations: viewReservations, issuance: viewIssuance, audit: viewAudit, import: viewImport };
+    const screens = { dashboard: viewDashboard, inventory: viewInventory, reservations: viewReservations, issuance: viewIssuance, cod: viewCod, audit: viewAudit, import: viewImport };
     if (S.screen === 'import' && !D.canEdit) S.screen = 'dashboard';
     $app.innerHTML = `<div class="layout">
       <aside class="side"><div class="brand"><img class="brand-logo" src="logo.png" alt="IREC, Saxon Renewables"></div>${viewNav(D)}${viewSync()}</aside>
@@ -704,7 +766,7 @@
     } catch (e) { say(e.message, true); }
   }
   async function refreshAll(msg) {
-    await load(); render();
+    await load(); S.codState = ''; render(); if (S.screen === 'cod') loadCod();
     if (S.logWarning) { const w = S.logWarning; S.logWarning = null; say(w, true); }
     else if (msg) say(msg);
   }
@@ -720,7 +782,7 @@
     if (a === 'toggle' || a === 'pickfile') return;
     if (!S.data) return;
     if (a === 'toggledone') { S.showDone = !S.showDone; render(); return; }
-    if (a === 'go') { S.screen = el.dataset.s; S.detail = null; S.form = null; S.err = ''; S.pending = null; render(); window.scrollTo(0, 0); return; }
+    if (a === 'go') { S.screen = el.dataset.s; S.detail = null; S.form = null; S.err = ''; S.pending = null; render(); window.scrollTo(0, 0); if (S.screen === 'cod' && !S.codState) loadCod(); return; }
     if (a === 'open') { S.screen = 'inventory'; S.detail = { kind: 'item', id: el.dataset.id }; S.form = null; S.fv.remark = ''; render(); loadRemarks(el.dataset.id); return; }
     if (a === 'page') {
       const p = el.dataset.p;
